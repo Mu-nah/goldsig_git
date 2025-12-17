@@ -12,7 +12,6 @@ SCOPE = [
     "https://www.googleapis.com/auth/drive"
 ]
 
-
 # ──────────────────────────────
 # LOAD GOOGLE SERVICE ACCOUNT
 # ──────────────────────────────
@@ -35,17 +34,22 @@ sheet = gc.open(SHEET_NAME).sheet1
 def get_last_signal(symbol):
     """Retrieve the last sent signal for a symbol from Google Sheet."""
     records = sheet.get_all_records()
+
     for row in records:
-        if row["symbol"] == symbol:
-            return row["last_signal"]
+        if row.get("symbol") == symbol:
+            return row.get("last_signal")
+
     return None
+
 
 def set_last_signal(symbol, signal):
     """Update the last sent signal for a symbol in Google Sheet."""
     records = sheet.get_all_records()
+
     for i, row in enumerate(records, start=2):
-        if row["symbol"] == symbol:
+        if row.get("symbol") == symbol:
             sheet.update_cell(i, 2, signal)
             return
-    # If symbol not found, append new row
+
+    # First time seeing this symbol
     sheet.append_row([symbol, signal])
