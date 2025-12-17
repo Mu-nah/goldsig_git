@@ -1,4 +1,5 @@
 import os
+import asyncio
 import requests
 import pandas as pd
 import feedparser
@@ -31,10 +32,13 @@ tokenizer = AutoTokenizer.from_pretrained("yiyanghkust/finbert-tone")
 model = AutoModelForSequenceClassification.from_pretrained("yiyanghkust/finbert-tone")
 
 # ──────────────────────────────
-# TELEGRAM
+# TELEGRAM (FIXED: async-safe)
 # ──────────────────────────────
+async def _send(msg: str):
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+
 def send_alert(msg: str):
-    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+    asyncio.run(_send(msg))
 
 # ──────────────────────────────
 # MARKET DATA
