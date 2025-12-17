@@ -1,0 +1,8 @@
+python-dotenv
+requests
+pandas
+numpy
+feedparser
+torch
+transformers
+python-telegram-bot
