@@ -7,7 +7,11 @@ from google.oauth2.service_account import Credentials
 # CONFIG
 # ──────────────────────────────
 SHEET_NAME = "TradingBotState"
-SCOPE = ["https://www.googleapis.com/auth/spreadsheets"]
+SCOPE = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
+
 
 # ──────────────────────────────
 # LOAD GOOGLE SERVICE ACCOUNT
