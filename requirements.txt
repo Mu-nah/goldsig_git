@@ -1,8 +1,9 @@
-python-dotenv
+python-telegram-bot==20.3
 requests
 pandas
 numpy
 feedparser
 torch
 transformers
-python-telegram-bot
+flask
+python-dotenv
