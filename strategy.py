@@ -17,14 +17,16 @@ def generate_signal(df_1h, df_1d):
 
     trend = (direction == "BUY" and last1h["close"] > last1h["bb_mid"] + MIN_PIP_DISTANCE) or \
             (direction == "SELL" and last1h["close"] < last1h["bb_mid"] - MIN_PIP_DISTANCE)
+
     reversal = (direction == "BUY" and last1h["close"] < last1h["bb_mid"]) or \
                (direction == "SELL" and last1h["close"] > last1h["bb_mid"])
+
     confirm1d = (direction == "BUY" and last1d["close"] > last1d["open"]) or \
                 (direction == "SELL" and last1d["close"] < last1d["open"])
+
     inside_bb1d = last1d["close"] < last1d["bb_upper"] and last1d["close"] > last1d["bb_lower"]
 
     if (trend or reversal) and confirm1d and inside_bb1d:
-        sig_type = "Trend" if trend else "Reversal"
-        return direction, last1h, sig_type
+        return direction, last1h, "Trend" if trend else "Reversal"
 
     return None, last1h, None
