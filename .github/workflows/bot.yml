@@ -1,27 +1,30 @@
 name: Trading Bot
 
 on:
+  # Every 30 minutes
   schedule:
-    # Every 30 minutes
     - cron: "*/30 * * * *"
-    # 1AM WAT (00:00 UTC) weekdays
+    # 1AM WAT weekdays (UTC 00:00)
     - cron: "0 0 * * 1-5"
 
-  workflow_dispatch: # allows manual run
+  workflow_dispatch: # manual run option
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
 
     steps:
+      # 1️⃣ Checkout repository
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      # 2️⃣ Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
+      # 3️⃣ Cache pip and transformers
       - name: Cache dependencies
         uses: actions/cache@v4
         with:
@@ -30,11 +33,15 @@ jobs:
             /tmp/.cache
           key: bot-cache-${{ runner.os }}
 
+      # 4️⃣ Install Python dependencies
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install --upgrade pip && pip install -r requirements.txt
 
-      - name: Run bot
+      # 5️⃣ Run bot
+      - name: Run Trading Bot
         run: |
+          # Determine which run type to use
+          # 1AM WAT daily alert = 'daily', else normal 30-min interval
           if [[ "${{ github.event.schedule }}" == "0 0 * * 1-5" ]]; then
             python main.py daily
           else
@@ -44,3 +51,4 @@ jobs:
           TD_API_KEYS: ${{ secrets.TD_API_KEYS }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
