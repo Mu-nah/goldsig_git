@@ -3,11 +3,16 @@ from helpers import fetch_data, analyze_sentiment, send_alert
 from strategy import generate_signal, SYMBOLS
 from state import get_last_signal, set_last_signal
 
+# ──────────────────────────────
+# Timezone
+# ──────────────────────────────
 WAT = timezone(timedelta(hours=1))  # UTC+1
+now_wat = datetime.now(WAT)
 
-def main(run_type="normal"):
-    now_wat = datetime.now(WAT)
+# Determine run type automatically
+run_type = "daily" if now_wat.hour == 1 and now_wat.minute < 20 else "normal"
 
+def main(run_type=run_type):
     for symbol in SYMBOLS:
         df_1h = fetch_data(symbol, "1h", 100)
         df_1d = fetch_data(symbol, "1day", 50)
@@ -16,13 +21,12 @@ def main(run_type="normal"):
 
         signal, last1h, sig_type = generate_signal(df_1h, df_1d)
 
-        # 🔑 FULL signal identity
+        # 🔑 Full signal identity
         current_signal = f"{signal}_{sig_type}" if signal and sig_type else None
 
         if run_type == "normal":
             last_signal = get_last_signal(symbol)
-
-            # ✅ Alert ONLY if signal identity changed
+            # ✅ Alert only if signal identity changed
             if current_signal and current_signal != last_signal:
                 pos, neg, neu = analyze_sentiment(symbol)
                 msg = (
@@ -49,6 +53,4 @@ def main(run_type="normal"):
             send_alert(msg)
 
 if __name__ == "__main__":
-    import sys
-    run_type = sys.argv[1] if len(sys.argv) > 1 else "normal"
     main(run_type)
