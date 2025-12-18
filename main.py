@@ -16,11 +16,13 @@ def main(run_type="normal"):
 
         signal, last1h, sig_type = generate_signal(df_1h, df_1d)
 
+        # 🔑 FULL signal identity
+        current_signal = f"{signal}_{sig_type}" if signal and sig_type else None
+
         if run_type == "normal":
             last_signal = get_last_signal(symbol)
 
-            current_signal = f"{signal}_{sig_type}" if signal and sig_type else None
-
+            # ✅ Alert ONLY if signal identity changed
             if current_signal and current_signal != last_signal:
                 pos, neg, neu = analyze_sentiment(symbol)
                 msg = (
