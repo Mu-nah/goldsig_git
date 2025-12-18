@@ -18,7 +18,10 @@ def main(run_type="normal"):
 
         if run_type == "normal":
             last_signal = get_last_signal(symbol)
-            if signal and signal != last_signal:
+
+            current_signal = f"{signal}_{sig_type}" if signal and sig_type else None
+
+            if current_signal and current_signal != last_signal:
                 pos, neg, neu = analyze_sentiment(symbol)
                 msg = (
                     f"📊 {symbol} Signal ({signal})"
@@ -29,7 +32,7 @@ def main(run_type="normal"):
                     f"Time: {now_wat}"
                 )
                 send_alert(msg)
-                set_last_signal(symbol, signal)
+                set_last_signal(symbol, current_signal)
 
         elif run_type == "daily":
             pos, neg, neu = analyze_sentiment(symbol)
