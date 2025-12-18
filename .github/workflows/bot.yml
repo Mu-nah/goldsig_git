@@ -1,10 +1,11 @@
 name: Trading Bot
 
 on:
-  # Every 20 minutes
   schedule:
+    # Every 20 minutes UTC
     - cron: "*/20 * * * *"
-    # 1AM WAT weekdays (UTC 00:00)
+
+    # Daily at 1AM WAT weekdays (00:00 UTC)
     - cron: "0 0 * * 1-5"
 
   workflow_dispatch: # manual run option
@@ -15,7 +16,7 @@ jobs:
 
     steps:
       # 1️⃣ Checkout repository
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       # 2️⃣ Set up Python
@@ -25,28 +26,23 @@ jobs:
           python-version: "3.11"
 
       # 3️⃣ Cache pip and transformers
-      - name: Cache dependencies
+      - name: Cache Python & Transformers
         uses: actions/cache@v4
         with:
           path: |
             ~/.cache/pip
             /tmp/.cache
-          key: bot-cache-${{ runner.os }}
+          key: bot-cache-${{ runner.os }}-v1
 
-      # 4️⃣ Install Python dependencies
+      # 4️⃣ Install dependencies
       - name: Install dependencies
-        run: pip install --upgrade pip && pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       # 5️⃣ Run bot
       - name: Run Trading Bot
-        run: |
-          # Determine which run type to use
-          # 1AM WAT daily alert = 'daily', else normal 30-min interval
-          if [[ "${{ github.event.schedule }}" == "0 0 * * 1-5" ]]; then
-            python main.py daily
-          else
-            python main.py normal
-          fi
+        run: python main.py
         env:
           TD_API_KEYS: ${{ secrets.TD_API_KEYS }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
