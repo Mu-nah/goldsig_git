@@ -1,9 +1,9 @@
 name: Trading Bot
 
 on:
-  # Every 30 minutes
+  # Every 20 minutes
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "*/20 * * * *"
     # 1AM WAT weekdays (UTC 00:00)
     - cron: "0 0 * * 1-5"
 
