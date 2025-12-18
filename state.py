@@ -28,23 +28,29 @@ creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPE)
 gc = gspread.authorize(creds)
 sheet = gc.open(SHEET_NAME).sheet1
 
+# Expected columns:
+# | key | last_signal |
+
 # ──────────────────────────────
 # GET / SET LAST SIGNAL
 # ──────────────────────────────
-def get_last_signal(symbol):
-    """Retrieve the last sent signal for a symbol from Google Sheet."""
+def get_last_signal(key):
     records = sheet.get_all_records()
+
     for row in records:
-        if row.get("symbol") == symbol:
+        if row.get("key") == key:
             return row.get("last_signal")
+
     return None
 
-def set_last_signal(symbol, signal):
-    """Update the last sent signal for a symbol in Google Sheet."""
+
+def set_last_signal(key, signal):
     records = sheet.get_all_records()
+
     for i, row in enumerate(records, start=2):
-        if row.get("symbol") == symbol:
+        if row.get("key") == key:
             sheet.update_cell(i, 2, signal)
             return
-    # First time seeing this symbol
-    sheet.append_row([symbol, signal])
+
+    # First time seeing this key
+    sheet.append_row([key, signal])
