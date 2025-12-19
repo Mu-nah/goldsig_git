@@ -3,54 +3,46 @@ import json
 import gspread
 from google.oauth2.service_account import Credentials
 
-# ──────────────────────────────
-# CONFIG
-# ──────────────────────────────
 SHEET_NAME = "TradingBotState"
 SCOPE = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
 
-# ──────────────────────────────
-# LOAD GOOGLE SERVICE ACCOUNT
-# ──────────────────────────────
+# Load service account
 creds_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 if not creds_json:
     raise ValueError("GOOGLE_SERVICE_ACCOUNT_JSON secret is not set!")
 
 creds_dict = json.loads(creds_json)
 creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPE)
-
-# ──────────────────────────────
-# AUTHORIZE SHEET
-# ──────────────────────────────
 gc = gspread.authorize(creds)
 sheet = gc.open(SHEET_NAME).sheet1
 
-# Expected columns:
-# | key | last_signal |
+# In-memory cache to minimize Google Sheets reads
+_signal_cache = {}
 
-# ──────────────────────────────
-# GET / SET LAST SIGNAL
-# ──────────────────────────────
-def get_last_signal(key):
+def _load_cache():
+    global _signal_cache
+    if not _signal_cache:
+        records = sheet.get_all_records()
+        _signal_cache = {row["symbol"]: row["last_signal"] for row in records}
+
+def get_last_signal(symbol):
+    _load_cache()
+    return _signal_cache.get(symbol)
+
+def set_last_signal(symbol, signal):
+    _load_cache()
+    # Only update if changed
+    if _signal_cache.get(symbol) == signal:
+        return
+    _signal_cache[symbol] = signal
+
     records = sheet.get_all_records()
-
-    for row in records:
-        if row.get("key") == key:
-            return row.get("last_signal")
-
-    return None
-
-
-def set_last_signal(key, signal):
-    records = sheet.get_all_records()
-
     for i, row in enumerate(records, start=2):
-        if row.get("key") == key:
+        if row.get("symbol") == symbol:
             sheet.update_cell(i, 2, signal)
             return
-
-    # First time seeing this key
-    sheet.append_row([key, signal])
+    # If new symbol
+    sheet.append_row([symbol, signal])
