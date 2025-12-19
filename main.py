@@ -1,48 +1,60 @@
-import os
-import json
-import gspread
-from google.oauth2.service_account import Credentials
+from datetime import datetime, timezone, timedelta
+from helpers import fetch_data, analyze_sentiment, send_alert
+from strategy import generate_signal, SYMBOLS
+from state import get_last_signal, set_last_signal
 
-SHEET_NAME = "TradingBotState"
-SCOPE = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
-]
+# Timezone
+WAT = timezone(timedelta(hours=1))  # UTC+1
+now_wat = datetime.now(WAT)
 
-# Load service account
-creds_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
-if not creds_json:
-    raise ValueError("GOOGLE_SERVICE_ACCOUNT_JSON secret is not set!")
+# Determine run type automatically
+run_type = "daily" if now_wat.hour == 1 and now_wat.minute < 20 else "normal"
 
-creds_dict = json.loads(creds_json)
-creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPE)
-gc = gspread.authorize(creds)
-sheet = gc.open(SHEET_NAME).sheet1
+def main(run_type=run_type):
+    for symbol in SYMBOLS:
+        df_1h = fetch_data(symbol, "1h", 100)
+        df_1d = fetch_data(symbol, "1day", 50)
 
-# In-memory cache to minimize Google Sheets reads
-_signal_cache = {}
+        if df_1h is None or df_1d is None:
+            continue
 
-def _load_cache():
-    global _signal_cache
-    if not _signal_cache:
-        records = sheet.get_all_records()
-        _signal_cache = {row["symbol"]: row["last_signal"] for row in records}
+        signal, last1h, sig_type = generate_signal(df_1h, df_1d)
 
-def get_last_signal(symbol):
-    _load_cache()
-    return _signal_cache.get(symbol)
+        # Full signal identity (None if no signal)
+        current_signal = f"{signal}_{sig_type}" if signal and sig_type else None
 
-def set_last_signal(symbol, signal):
-    _load_cache()
-    # Only update if changed
-    if _signal_cache.get(symbol) == signal:
-        return
-    _signal_cache[symbol] = signal
+        last_signal = get_last_signal(symbol)
 
-    records = sheet.get_all_records()
-    for i, row in enumerate(records, start=2):
-        if row.get("symbol") == symbol:
-            sheet.update_cell(i, 2, signal)
-            return
-    # If new symbol
-    sheet.append_row([symbol, signal])
+        if run_type == "normal":
+            # Skip if no signal or signal hasn't changed
+            if not current_signal or current_signal == last_signal:
+                continue
+
+            pos, neg, neu = analyze_sentiment(symbol)
+            msg = (
+                f"📊 {symbol} Signal ({signal})"
+                + (f" [{sig_type}]" if sig_type else "") + "\n"
+                f"Close: {last1h['close']:.4f}\n"
+                f"RSI: {last1h['rsi']:.2f}\n"
+                f"Sentiment → 🟢 {pos:.1f}% | 🔴 {neg:.1f}% | ⚪ {neu:.1f}%\n"
+                f"Time: {now_wat}"
+            )
+            send_alert(msg)
+            set_last_signal(symbol, current_signal)
+
+        elif run_type == "daily":
+            pos, neg, neu = analyze_sentiment(symbol)
+            msg = (
+                f"⏰ {symbol} 1AM WAT Status\n"
+                f"Signal: {signal if signal else 'No clear signal'}"
+                + (f" ({sig_type})" if sig_type else "") + "\n"
+                f"Close: {last1h['close']:.4f}\n"
+                f"RSI: {last1h['rsi']:.2f}\n"
+                f"Sentiment → 🟢 {pos:.1f}% | 🔴 {neg:.1f}% | ⚪ {neu:.1f}%"
+            )
+            send_alert(msg)
+            # Store even "no signal" to track last state
+            set_last_signal(symbol, current_signal if current_signal else "no_signal")
+
+if __name__ == "__main__":
+    main(run_type)
