@@ -2,8 +2,7 @@ name: Trading Bot (1AM WAT Status)
 
 on:
   schedule:
-    # 1AM WAT = 00:00 UTC
-    - cron: "0 0 * * *"
+    - cron: "0 0 * * *"   # 1AM WAT = 00:00 UTC
   workflow_dispatch:
 
 jobs:
@@ -21,7 +20,7 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      - name: Run daily status check
+      - name: Run daily status bot
         env:
           RUN_MODE: daily
           TD_API_KEYS: ${{ secrets.TD_API_KEYS }}
