@@ -12,9 +12,12 @@ WAT = timezone(timedelta(hours=1))  # UTC+1
 
 
 def main():
-    # Determine run mode explicitly from GitHub Actions
     run_mode = os.getenv("RUN_MODE", "normal")  # normal | daily
     now_wat = datetime.now(WAT)
+
+    # 🔒 HARD GATE: daily alerts ONLY at 1AM WAT
+    if run_mode == "daily" and now_wat.hour != 1:
+        return
 
     for symbol in SYMBOLS:
         df_1h = fetch_data(symbol, "1h", 100)
@@ -25,19 +28,16 @@ def main():
 
         signal, last1h, sig_type = generate_signal(df_1h, df_1d)
 
-        # Full signal identity
         current_signal = f"{signal}_{sig_type}" if signal and sig_type else None
         last_signal = get_last_signal(symbol)
 
         # ──────────────────────────────
-        # NORMAL RUN (signals only)
+        # NORMAL RUN
         # ──────────────────────────────
         if run_mode == "normal":
-            # No signal → no alert
             if not current_signal:
                 continue
 
-            # Same signal → no duplicate alert
             if current_signal == last_signal:
                 continue
 
@@ -56,10 +56,9 @@ def main():
             set_last_signal(symbol, current_signal)
 
         # ──────────────────────────────
-        # DAILY RUN (1AM WAT status)
+        # DAILY RUN (1AM WAT ONLY)
         # ──────────────────────────────
         elif run_mode == "daily":
-            # One daily alert per symbol per day
             daily_key = f"daily_{now_wat.date()}"
 
             if last_signal == daily_key:
@@ -78,8 +77,6 @@ def main():
             )
 
             send_alert(msg)
-
-            # Lock daily alert
             set_last_signal(symbol, daily_key)
 
 
