@@ -1,11 +1,8 @@
-name: Trading Bot (1AM WAT Status)
+name: Trading Bot (12AM WAT Status)
 
 on:
   schedule:
-    # Run every 10 mins between 00:00–01:00 UTC
-    # (1AM–2AM WAT window)
-    - cron: "*/10 0 * * *"
-    - cron: "*/10 1 * * *"
+    - cron: "0 23 * * *"   # 12:00 AM WAT
   workflow_dispatch:
 
 jobs:
@@ -20,7 +17,8 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
 
       - name: Run daily status bot
         env:
