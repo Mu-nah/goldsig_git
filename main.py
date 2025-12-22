@@ -12,12 +12,14 @@ WAT = timezone(timedelta(hours=1))  # UTC+1
 
 
 def main():
+    # Determine run mode explicitly from GitHub Actions
     run_mode = os.getenv("RUN_MODE", "normal")  # normal | daily
     now_wat = datetime.now(WAT)
 
-    # 🔒 HARD GATE: daily alerts ONLY at 1AM WAT
-    if run_mode == "daily" and now_wat.hour != 1:
-        return
+    # 🔒 DAILY WINDOW: 12:00–01:59 AM WAT ONLY
+    if run_mode == "daily":
+        if now_wat.hour not in (0, 1):
+            return
 
     for symbol in SYMBOLS:
         df_1h = fetch_data(symbol, "1h", 100)
@@ -28,16 +30,19 @@ def main():
 
         signal, last1h, sig_type = generate_signal(df_1h, df_1d)
 
+        # Full signal identity
         current_signal = f"{signal}_{sig_type}" if signal and sig_type else None
         last_signal = get_last_signal(symbol)
 
         # ──────────────────────────────
-        # NORMAL RUN
+        # NORMAL RUN (signals only)
         # ──────────────────────────────
         if run_mode == "normal":
+            # No signal → no alert
             if not current_signal:
                 continue
 
+            # Same signal → no duplicate alert
             if current_signal == last_signal:
                 continue
 
@@ -56,7 +61,7 @@ def main():
             set_last_signal(symbol, current_signal)
 
         # ──────────────────────────────
-        # DAILY RUN (1AM WAT ONLY)
+        # DAILY RUN (12AM WAT status)
         # ──────────────────────────────
         elif run_mode == "daily":
             daily_key = f"daily_{now_wat.date()}"
@@ -67,7 +72,7 @@ def main():
             pos, neg, neu = analyze_sentiment(symbol)
 
             msg = (
-                f"⏰ {symbol} — 1AM WAT Daily Status\n"
+                f"⏰ {symbol} — Daily Status\n"
                 f"Signal: {signal if signal else 'No clear signal'}"
                 + (f" ({sig_type})" if sig_type else "") + "\n"
                 f"Close: {last1h['close']:.4f}\n"
@@ -77,6 +82,8 @@ def main():
             )
 
             send_alert(msg)
+
+            # Lock daily alert
             set_last_signal(symbol, daily_key)
 
 
