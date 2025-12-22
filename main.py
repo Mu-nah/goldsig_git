@@ -34,7 +34,8 @@ def main():
         current_signal = f"{signal}_{sig_type}" if signal and sig_type else None
         last_signal = get_last_signal(symbol)
 
-        volume = last1h.get("volume", "N/A")
+        # ✅ FIXED: Twelve Data FX / XAUUSD volume support
+        volume = last1h.get("volume") or last1h.get("tick_volume") or "N/A"
 
         # ──────────────────────────────
         # NORMAL RUN (signals only)
