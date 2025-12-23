@@ -1,8 +1,11 @@
-name: Trading Bot (12AM WAT Status)
+name: Trading Bot (1AM WAT Status)
 
 on:
   schedule:
-    - cron: "0 23 * * *"   # 12:00 AM WAT
+    # Run slightly BEFORE 1AM WAT to avoid GitHub midnight delay
+    # 22:55 UTC = 11:55 PM WAT → safely lands inside 1AM WAT
+    - cron: "55 22 * * *"
+
   workflow_dispatch:
 
 jobs:
