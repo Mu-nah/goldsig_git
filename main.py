@@ -12,13 +12,12 @@ WAT = timezone(timedelta(hours=1))  # UTC+1
 
 
 def main():
-    # Determine run mode explicitly from GitHub Actions
     run_mode = os.getenv("RUN_MODE", "normal")  # normal | daily
     now_wat = datetime.now(WAT)
 
-    # 🔒 DAILY WINDOW: 12:00–01:59 AM WAT ONLY
+    # 🔒 STRICT DAILY WINDOW → 1AM WAT ONLY
     if run_mode == "daily":
-        if now_wat.hour not in (0, 1):
+        if now_wat.hour != 1:
             return
 
     for symbol in SYMBOLS:
@@ -30,12 +29,10 @@ def main():
 
         signal, last1h, sig_type = generate_signal(df_1h, df_1d)
 
-        # Full signal identity
         current_signal = f"{signal}_{sig_type}" if signal and sig_type else None
         last_signal = get_last_signal(symbol)
 
-        # ✅ FIXED: Twelve Data FX / XAUUSD volume support
-        volume = last1h.get("volume") or last1h.get("tick_volume") or "N/A"
+        volume = last1h.get("volume", "N/A")
 
         # ──────────────────────────────
         # NORMAL RUN (signals only)
@@ -63,7 +60,7 @@ def main():
             set_last_signal(symbol, current_signal)
 
         # ──────────────────────────────
-        # DAILY RUN (12AM WAT status)
+        # DAILY RUN (1AM WAT STATUS)
         # ──────────────────────────────
         elif run_mode == "daily":
             daily_key = f"daily_{now_wat.date()}"
@@ -74,7 +71,7 @@ def main():
             pos, neg, neu = analyze_sentiment(symbol)
 
             msg = (
-                f"⏰ {symbol} — 12AM WAT Daily Status\n"
+                f"⏰ {symbol} — 1AM WAT Daily Status\n"
                 f"Signal: {signal if signal else 'No clear signal'}"
                 + (f" ({sig_type})" if sig_type else "") + "\n"
                 f"Close: {last1h['close']:.4f}\n"
