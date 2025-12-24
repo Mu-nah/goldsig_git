@@ -51,7 +51,6 @@ def main():
                 f"Signal: {signal} ({sig_type})\n"
                 f"Close: {last1h['close']:.4f}\n"
                 f"RSI: {last1h['rsi']:.2f}\n"
-                f"Volume: {volume}\n"
                 f"Sentiment → 🟢 {pos:.1f}% | 🔴 {neg:.1f}% | ⚪ {neu:.1f}%\n"
                 f"Time (WAT): {now_wat.strftime('%Y-%m-%d %H:%M')}"
             )
@@ -78,7 +77,6 @@ def main():
                 + (f" ({sig_type})" if sig_type else "") + "\n"
                 f"Close: {last1h['close']:.4f}\n"
                 f"RSI: {last1h['rsi']:.2f}\n"
-                f"Volume: {volume}\n"
                 f"Sentiment → 🟢 {pos:.1f}% | 🔴 {neg:.1f}% | ⚪ {neu:.1f}%\n"
                 f"Date: {now_wat.strftime('%Y-%m-%d')}"
             )
