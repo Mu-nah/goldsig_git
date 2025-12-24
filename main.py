@@ -32,8 +32,6 @@ def main():
         current_signal = f"{signal}_{sig_type}" if signal and sig_type else None
         last_signal = get_last_signal(symbol)
 
-        volume = last1h.get("volume", "N/A")
-
         # ──────────────────────────────
         # NORMAL RUN (signals only)
         # ──────────────────────────────
@@ -82,8 +80,6 @@ def main():
             )
 
             send_alert(msg)
-
-            # Lock daily alert using separate key
             set_last_signal(symbol, daily_key)
 
 
