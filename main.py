@@ -63,8 +63,10 @@ def main():
         # DAILY RUN (1AM WAT STATUS)
         # ──────────────────────────────
         elif run_mode == "daily":
-            daily_key = f"daily_{now_wat.date()}"
+            # ✅ Use a separate key for daily status
+            daily_key = f"daily_status_{now_wat.date()}"
 
+            # Skip only if today's daily status already sent
             if last_signal == daily_key:
                 continue
 
@@ -82,6 +84,8 @@ def main():
             )
 
             send_alert(msg)
+
+            # Lock daily alert using separate key
             set_last_signal(symbol, daily_key)
 
 
