@@ -15,11 +15,6 @@ def main():
     run_mode = os.getenv("RUN_MODE", "normal")  # normal | daily
     now_wat = datetime.now(WAT)
 
-    # 🔒 STRICT DAILY WINDOW → 1AM WAT ONLY
-    if run_mode == "daily":
-        if now_wat.hour != 1:
-            return
-
     for symbol in SYMBOLS:
         df_1h = fetch_data(symbol, "1h", 100)
         df_1d = fetch_data(symbol, "1day", 50)
@@ -60,7 +55,6 @@ def main():
         # DAILY RUN (1AM WAT STATUS)
         # ──────────────────────────────
         elif run_mode == "daily":
-            # ✅ Use a separate key for daily status
             daily_key = f"daily_status_{now_wat.date()}"
 
             # Skip only if today's daily status already sent
