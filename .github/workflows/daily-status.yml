@@ -2,10 +2,7 @@ name: Trading Bot (1AM WAT Status)
 
 on:
   schedule:
-    # Run slightly BEFORE 1AM WAT to avoid GitHub midnight delay
-    # 22:55 UTC = 11:55 PM WAT → safely lands inside 1AM WAT
-    - cron: "55 22 * * *"
-
+    - cron: "0 0 * * *"   # 00:00 UTC = 1:00 AM WAT
   workflow_dispatch:
 
 jobs:
@@ -20,8 +17,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
 
       - name: Run daily status bot
         env:
