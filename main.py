@@ -25,14 +25,15 @@ def main():
         signal, last1h, sig_type = generate_signal(df_1h, df_1d)
 
         current_signal = f"{signal}_{sig_type}" if signal and sig_type else None
-        last_signal = get_last_signal(symbol)
 
         # ──────────────────────────────
-        # NORMAL RUN (signals only)
+        # NORMAL MODE → USE STATE
         # ──────────────────────────────
         if run_mode == "normal":
             if not current_signal:
                 continue
+
+            last_signal = get_last_signal(symbol)
 
             if current_signal == last_signal:
                 continue
@@ -52,15 +53,9 @@ def main():
             set_last_signal(symbol, current_signal)
 
         # ──────────────────────────────
-        # DAILY RUN (1AM WAT STATUS)
+        # DAILY MODE → NO STATE
         # ──────────────────────────────
         elif run_mode == "daily":
-            daily_key = f"daily_status_{now_wat.date()}"
-
-            # Skip only if today's daily status already sent
-            if last_signal == daily_key:
-                continue
-
             pos, neg, neu = analyze_sentiment(symbol)
 
             msg = (
@@ -74,7 +69,6 @@ def main():
             )
 
             send_alert(msg)
-            set_last_signal(symbol, daily_key)
 
 
 if __name__ == "__main__":
