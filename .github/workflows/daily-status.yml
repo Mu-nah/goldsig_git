@@ -1,9 +1,9 @@
 name: Trading Bot (1AM WAT Status)
 
 on:
-  repository_dispatch:
-    types: [daily_status]
   workflow_dispatch:
+    types: [daily_status]
+ 
 
 jobs:
   daily-status:
