@@ -6,6 +6,8 @@ import feedparser
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from telegram import Bot
+from telegram.request import HTTPXRequest
+from telegram.error import TimedOut, NetworkError
 from urllib.parse import quote
 
 # ──────────────────────────────
@@ -17,7 +19,14 @@ API_KEYS = os.getenv("TD_API_KEYS", "").split(",")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-bot = Bot(token=TELEGRAM_TOKEN)
+request = HTTPXRequest(
+    connect_timeout=30,
+    read_timeout=30,
+    write_timeout=30,
+    pool_timeout=30,
+)
+
+bot = Bot(token=TELEGRAM_TOKEN, request=request)
 
 # HuggingFace cache (safe for GitHub Actions)
 os.environ["HF_HOME"] = "/tmp/.cache"
@@ -32,13 +41,24 @@ tokenizer = AutoTokenizer.from_pretrained("yiyanghkust/finbert-tone")
 model = AutoModelForSequenceClassification.from_pretrained("yiyanghkust/finbert-tone")
 
 # ──────────────────────────────
-# TELEGRAM (FIXED: async-safe)
+# TELEGRAM (HARDENED, NON-BLOCKING)
 # ──────────────────────────────
 async def _send(msg: str):
-    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+    try:
+        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+    except (TimedOut, NetworkError) as e:
+        print(f"[WARN] Telegram timeout/network error: {e}")
+    except Exception as e:
+        print(f"[WARN] Telegram unexpected error: {e}")
 
 def send_alert(msg: str):
-    asyncio.run(_send(msg))
+    try:
+        asyncio.run(_send(msg))
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(_send(msg))
+        loop.close()
 
 # ──────────────────────────────
 # MARKET DATA
