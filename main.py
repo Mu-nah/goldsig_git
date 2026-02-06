@@ -59,7 +59,7 @@ def main():
             pos, neg, neu = analyze_sentiment(symbol)
 
             msg = (
-                f"⏰ {symbol} — 1AM WAT Daily Status\n"
+                f"⏰ {symbol} — Current Status\n"
                 f"Signal: {signal if signal else 'No clear signal'}"
                 + (f" ({sig_type})" if sig_type else "") + "\n"
                 f"Close: {last1h['close']:.4f}\n"
