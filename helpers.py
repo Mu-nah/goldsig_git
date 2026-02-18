@@ -37,7 +37,10 @@ os.environ["TRANSFORMERS_CACHE"] = "/tmp/.cache"
 # ──────────────────────────────
 labels = ["Positive", "Negative", "Neutral"]
 
-tokenizer = AutoTokenizer.from_pretrained("yiyanghkust/finbert-tone")
+tokenizer = AutoTokenizer.from_pretrained(
+    "yiyanghkust/finbert-tone",
+    use_fast=False
+)
 model = AutoModelForSequenceClassification.from_pretrained("yiyanghkust/finbert-tone")
 
 # ──────────────────────────────
