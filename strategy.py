@@ -24,6 +24,22 @@ def _strong_candle(candle, direction: str) -> bool:
     return (candle["close"] > candle["open"]) if direction == "BUY" \
            else (candle["close"] < candle["open"])
 
+def _away_from_swing(df_1h, direction: str, lookback: int = 12) -> bool:
+    """
+    Avoid entering SELL near recent swing low or BUY near recent swing high.
+    Prevents fading into support/resistance walls.
+    """
+    recent  = df_1h.iloc[-lookback:]
+    price   = df_1h.iloc[-1]["close"]
+    atr_val = df_1h.iloc[-1]["atr"]
+
+    if direction == "SELL":
+        swing_low = recent["low"].min()
+        return price > swing_low + atr_val
+    else:
+        swing_high = recent["high"].max()
+        return price < swing_high - atr_val
+
 def _daily_bias(df_1d) -> str | None:
     """
     Structural bias — daily BB midline + 5-candle majority vote.
@@ -90,13 +106,15 @@ def generate_signal(df_1h, df_1d, sentiment_bias: int = 0):
     if (daily_bias == "BUY"
             and price > last1h["bb_mid"]
             and RSI_BULL_ZONE < rsi_val < RSI_OVERBOUGHT
-            and _strong_candle(last1h, "BUY")):
+            and _strong_candle(last1h, "BUY")
+            and _away_from_swing(df_1h, "BUY")):
         direction, signal_type = "BUY", "Trend"
 
     elif (daily_bias == "SELL"
             and price < last1h["bb_mid"]
             and RSI_OVERSOLD < rsi_val < RSI_BULL_ZONE
-            and _strong_candle(last1h, "SELL")):
+            and _strong_candle(last1h, "SELL")
+            and _away_from_swing(df_1h, "SELL")):
         direction, signal_type = "SELL", "Trend"
 
     # Mean reversion at BB extremes
