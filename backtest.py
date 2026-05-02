@@ -1,4 +1,3 @@
-import os
 import pandas as pd
 from datetime import datetime, timezone, timedelta
 from helpers import fetch_data, send_alert, rsi, bollinger_bands, atr
@@ -11,6 +10,7 @@ INITIAL_EQUITY = 10_000
 RISK_PER_TRADE = 0.01
 LOOKBACK_DAYS  = 30
 WAT            = timezone(timedelta(hours=1))
+COOLDOWN_BARS  = 10    # bars to skip after an SL before re-entering same direction
 
 RSI_PERIOD     = 14
 BB_PERIOD      = 20
@@ -38,27 +38,26 @@ def strong_candle(candle, direction: str) -> bool:
            else (candle["close"] < candle["open"])
 
 def away_from_swing(df_1h: pd.DataFrame, i: int,
-                    direction: str, lookback: int = 12) -> bool:
+                    direction: str, lookback: int = 20) -> bool:
     """
-    Avoid entering SELL near recent swing low or BUY near recent swing high.
-    Prevents fading into support/resistance walls.
+    Price must be at least 2x average candle range away from swing high/low.
+    Prevents entries right at support/resistance walls.
     """
-    start      = max(0, i - lookback)
-    recent     = df_1h.iloc[start: i + 1]
-    price      = df_1h.iloc[i]["close"]
-    atr_val    = df_1h.iloc[i]["atr"]
+    start     = max(0, i - lookback)
+    recent    = df_1h.iloc[start: i + 1]
+    price     = df_1h.iloc[i]["close"]
+    avg_range = (recent["high"] - recent["low"]).mean()
 
     if direction == "SELL":
         swing_low = recent["low"].min()
-        return price > swing_low + atr_val
+        return price > swing_low + (avg_range * 2)
     else:
         swing_high = recent["high"].max()
-        return price < swing_high - atr_val
+        return price < swing_high - (avg_range * 2)
 
 def daily_bias(df_1d: pd.DataFrame, idx: int) -> str | None:
     """
     Structural bias — daily BB midline + 5-candle majority vote.
-    Prevents BUY signals in falling markets and vice versa.
     """
     if idx < 4:
         return None
@@ -69,7 +68,6 @@ def daily_bias(df_1d: pd.DataFrame, idx: int) -> str | None:
         return None
 
     price_above_mid = last1d["close"] > last1d["bb_mid"]
-
     window = df_1d.iloc[max(0, idx - 4): idx + 1]
     bulls  = sum(1 for _, c in window.iterrows() if c["close"] > c["open"])
 
@@ -118,7 +116,7 @@ def scan_signal(df_1h: pd.DataFrame, i: int,
     direction = None
     sig_type  = None
 
-    # Trend continuation — single candle + swing filter
+    # Trend continuation
     if (bias == "BUY"
             and price > last1h["bb_mid"]
             and RSI_BULL_ZONE < rsi_val < RSI_OVERBOUGHT
@@ -133,7 +131,7 @@ def scan_signal(df_1h: pd.DataFrame, i: int,
             and away_from_swing(df_1h, i, "SELL")):
         direction, sig_type = "SELL", "Trend"
 
-    # Mean reversion at BB extremes
+    # Mean reversion
     elif (bias == "BUY"
             and price <= last1h["bb_lower"]
             and rsi_val <= RSI_OVERSOLD
@@ -161,9 +159,10 @@ def scan_signal(df_1h: pd.DataFrame, i: int,
 # ──────────────────────────────
 def simulate_trades(df_1h: pd.DataFrame,
                     df_1d: pd.DataFrame) -> list[dict]:
-    trades = []
-    equity = INITIAL_EQUITY
-    trade  = None
+    trades   = []
+    equity   = INITIAL_EQUITY
+    trade    = None
+    cooldown = {"BUY": 0, "SELL": 0}   # bar index cooldown per direction
 
     df_1h = df_1h.copy()
     df_1d = df_1d.copy()
@@ -204,12 +203,22 @@ def simulate_trades(df_1h: pd.DataFrame,
                 trade["pnl_pips"]   = round(pnl_pips, 2)
                 trade["pnl_dollar"] = pnl_dollar
                 trade["equity"]     = equity
+
+                # ── Cooldown after SL ─────────────────
+                if trade["result"] == "SL":
+                    cooldown[trade["direction"]] = i + COOLDOWN_BARS
+
                 trades.append(trade)
                 trade = None
             continue
 
         # ── Look for new signal ───────────────────────
         direction, sig_type, sl, tp = scan_signal(df_1h, i, df_1d, d_idx)
+
+        # Block if still in cooldown for this direction
+        if direction and i < cooldown.get(direction, 0):
+            continue
+
         if direction:
             trade = {
                 "symbol":     "XAU/USD",
@@ -245,8 +254,8 @@ def calc_stats(trades: list[dict], initial_equity: float) -> dict:
 
     total_pnl     = sum(t["pnl_dollar"] for t in closed)
     win_rate      = len(wins) / len(closed) * 100
-    avg_win       = sum(t["pnl_dollar"] for t in wins)    / len(wins)   if wins   else 0
-    avg_loss      = sum(t["pnl_dollar"] for t in losses)  / len(losses) if losses else 0
+    avg_win       = sum(t["pnl_dollar"] for t in wins)   / len(wins)   if wins   else 0
+    avg_loss      = sum(t["pnl_dollar"] for t in losses) / len(losses) if losses else 0
     profit_factor = abs(
         sum(t["pnl_dollar"] for t in wins) /
         sum(t["pnl_dollar"] for t in losses)
