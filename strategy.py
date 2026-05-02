@@ -24,21 +24,21 @@ def _strong_candle(candle, direction: str) -> bool:
     return (candle["close"] > candle["open"]) if direction == "BUY" \
            else (candle["close"] < candle["open"])
 
-def _away_from_swing(df_1h, direction: str, lookback: int = 12) -> bool:
+def _away_from_swing(df_1h, direction: str, lookback: int = 20) -> bool:
     """
-    Avoid entering SELL near recent swing low or BUY near recent swing high.
-    Prevents fading into support/resistance walls.
+    Price must be at least 2x average candle range away from swing high/low.
+    Prevents entries right at support/resistance walls.
     """
-    recent  = df_1h.iloc[-lookback:]
-    price   = df_1h.iloc[-1]["close"]
-    atr_val = df_1h.iloc[-1]["atr"]
+    recent    = df_1h.iloc[-lookback:]
+    price     = df_1h.iloc[-1]["close"]
+    avg_range = (recent["high"] - recent["low"]).mean()
 
     if direction == "SELL":
         swing_low = recent["low"].min()
-        return price > swing_low + atr_val
+        return price > swing_low + (avg_range * 2)
     else:
         swing_high = recent["high"].max()
-        return price < swing_high - atr_val
+        return price < swing_high - (avg_range * 2)
 
 def _daily_bias(df_1d) -> str | None:
     """
@@ -63,7 +63,7 @@ def _daily_bias(df_1d) -> str | None:
     if not price_above_mid and bulls <= 2:
         return "SELL"
 
-    return None  # conflicting — sit out
+    return None
 
 def generate_signal(df_1h, df_1d, sentiment_bias: int = 0):
     """
@@ -102,7 +102,7 @@ def generate_signal(df_1h, df_1d, sentiment_bias: int = 0):
     direction   = None
     signal_type = None
 
-    # Trend continuation — single candle confirmation
+    # Trend continuation
     if (daily_bias == "BUY"
             and price > last1h["bb_mid"]
             and RSI_BULL_ZONE < rsi_val < RSI_OVERBOUGHT
