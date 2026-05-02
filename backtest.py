@@ -1,5 +1,4 @@
 import os
-import asyncio
 import pandas as pd
 from datetime import datetime, timezone, timedelta
 from helpers import fetch_data, send_alert, rsi, bollinger_bands, atr
@@ -8,7 +7,7 @@ from helpers import fetch_data, send_alert, rsi, bollinger_bands, atr
 # CONFIG
 # ──────────────────────────────
 SYMBOLS        = ["XAU/USD"]
-INITIAL_EQUITY = 10_000      # USD — adjust to your account size
+INITIAL_EQUITY = 10_000
 RISK_PER_TRADE = 0.01        # 1% risk per trade
 LOOKBACK_DAYS  = 30
 WAT            = timezone(timedelta(hours=1))
@@ -20,10 +19,10 @@ ATR_PERIOD     = 14
 SL_MULTIPLIER  = 1.5
 TP_MULTIPLIER  = 2.5
 
-RSI_OVERSOLD   = 35
-RSI_OVERBOUGHT = 65
-RSI_BULL_ZONE  = 50
-MIN_BODY_RATIO = 0.4
+RSI_OVERSOLD   = 30
+RSI_OVERBOUGHT = 70
+RSI_BULL_ZONE  = 48
+MIN_BODY_RATIO = 0.25
 
 # ──────────────────────────────
 # HELPERS
@@ -39,18 +38,17 @@ def strong_candle(candle, direction: str) -> bool:
            else (candle["close"] < candle["open"])
 
 def daily_bias(df_1d: pd.DataFrame, idx: int) -> str | None:
-    """3-candle majority vote up to idx on daily frame."""
-    window = df_1d.iloc[max(0, idx - 2): idx + 1]
-    if len(window) < 2:
+    """2-candle majority vote up to idx on daily frame."""
+    window = df_1d.iloc[max(0, idx - 1): idx + 1]
+    if len(window) < 1:
         return None
     bulls = sum(1 for _, c in window.iterrows() if c["close"] > c["open"])
-    if bulls >= 2: return "BUY"
-    if bulls <= 1: return "SELL"
-    return None
+    if bulls >= 1: return "BUY"
+    return "SELL"
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df["rsi"]                              = rsi(df["close"], RSI_PERIOD)
+    df["rsi"] = rsi(df["close"], RSI_PERIOD)
     df["bb_upper"], df["bb_mid"], df["bb_lower"] = bollinger_bands(
         df["close"], BB_PERIOD, BB_STDDEV
     )
@@ -58,21 +56,18 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # ──────────────────────────────
-# SIGNAL SCANNER (bar by bar)
+# SIGNAL SCANNER
 # ──────────────────────────────
 def scan_signal(df_1h: pd.DataFrame, i: int,
                 df_1d: pd.DataFrame, d_idx: int):
     """
-    Evaluate signal at bar i on 1h frame.
+    Evaluate signal at bar i.
     Returns (direction, signal_type, sl, tp) or (None, None, None, None)
     """
     if i < 1:
         return None, None, None, None
 
     last1h = df_1h.iloc[i]
-    prev1h = df_1h.iloc[i - 1]
-
-    # match this 1h bar to its daily bar
     last1d = df_1d.iloc[d_idx]
 
     rsi_val = last1h["rsi"]
@@ -93,19 +88,17 @@ def scan_signal(df_1h: pd.DataFrame, i: int,
     direction  = None
     sig_type   = None
 
-    # Trend continuation
+    # Trend continuation — single candle
     if (bias == "BUY"
             and price > last1h["bb_mid"]
             and RSI_BULL_ZONE < rsi_val < RSI_OVERBOUGHT
-            and strong_candle(last1h, "BUY")
-            and strong_candle(prev1h, "BUY")):
+            and strong_candle(last1h, "BUY")):
         direction, sig_type = "BUY", "Trend"
 
     elif (bias == "SELL"
             and price < last1h["bb_mid"]
             and RSI_OVERSOLD < rsi_val < RSI_BULL_ZONE
-            and strong_candle(last1h, "SELL")
-            and strong_candle(prev1h, "SELL")):
+            and strong_candle(last1h, "SELL")):
         direction, sig_type = "SELL", "Trend"
 
     # Mean reversion
@@ -136,25 +129,17 @@ def scan_signal(df_1h: pd.DataFrame, i: int,
 # ──────────────────────────────
 def simulate_trades(df_1h: pd.DataFrame,
                     df_1d: pd.DataFrame) -> list[dict]:
-    """
-    Walk bar by bar. On a new signal, open a trade.
-    On subsequent bars check if SL or TP was hit.
-    One trade open at a time.
-    """
-    trades   = []
-    equity   = INITIAL_EQUITY
-    trade    = None   # active trade
+    trades  = []
+    equity  = INITIAL_EQUITY
+    trade   = None
 
-    # Pre-compute daily index for each 1h bar
     df_1h = df_1h.copy()
     df_1d = df_1d.copy()
     df_1d["date"] = df_1d["datetime"].dt.date
     df_1h["date"] = df_1h["datetime"].dt.date
-
     d_dates = df_1d["date"].tolist()
 
     def get_d_idx(date):
-        # last daily bar on or before this date
         matches = [i for i, d in enumerate(d_dates) if d <= date]
         return matches[-1] if matches else 0
 
@@ -175,7 +160,6 @@ def simulate_trades(df_1h: pd.DataFrame,
                              if trade["direction"] == "BUY" \
                              else (trade["entry"] - exit_price)
 
-                # Position size: risk $RISK_PER_TRADE of equity per trade
                 risk_amt   = equity * RISK_PER_TRADE
                 sl_dist    = abs(trade["entry"] - trade["sl"])
                 lot_size   = risk_amt / sl_dist if sl_dist else 0
@@ -190,7 +174,7 @@ def simulate_trades(df_1h: pd.DataFrame,
                 trade["equity"]     = equity
                 trades.append(trade)
                 trade = None
-            continue   # don't look for new signal while in trade
+            continue
 
         # ── Look for new signal ───────────────────────
         direction, sig_type, sl, tp = scan_signal(df_1h, i, df_1d, d_idx)
@@ -205,7 +189,7 @@ def simulate_trades(df_1h: pd.DataFrame,
                 "entry_time": bar["datetime"],
             }
 
-    # Close any open trade at last bar (mark as open/pending)
+    # Mark any still-open trade
     if trade:
         trade.update({
             "exit": None, "exit_time": None,
@@ -217,7 +201,7 @@ def simulate_trades(df_1h: pd.DataFrame,
     return trades
 
 # ──────────────────────────────
-# STATS CALCULATOR
+# STATS
 # ──────────────────────────────
 def calc_stats(trades: list[dict], initial_equity: float) -> dict:
     closed = [t for t in trades if t["result"] != "OPEN"]
@@ -227,52 +211,51 @@ def calc_stats(trades: list[dict], initial_equity: float) -> dict:
     wins   = [t for t in closed if t["result"] == "TP"]
     losses = [t for t in closed if t["result"] == "SL"]
 
-    total_pnl    = sum(t["pnl_dollar"] for t in closed)
-    win_rate     = len(wins) / len(closed) * 100
-    avg_win      = sum(t["pnl_dollar"] for t in wins)  / len(wins)  if wins   else 0
-    avg_loss     = sum(t["pnl_dollar"] for t in losses)/ len(losses) if losses else 0
-    profit_factor= abs(sum(t["pnl_dollar"] for t in wins) /
-                       sum(t["pnl_dollar"] for t in losses)) if losses else float("inf")
+    total_pnl     = sum(t["pnl_dollar"] for t in closed)
+    win_rate      = len(wins) / len(closed) * 100
+    avg_win       = sum(t["pnl_dollar"] for t in wins)   / len(wins)   if wins   else 0
+    avg_loss      = sum(t["pnl_dollar"] for t in losses)  / len(losses) if losses else 0
+    profit_factor = abs(
+        sum(t["pnl_dollar"] for t in wins) /
+        sum(t["pnl_dollar"] for t in losses)
+    ) if losses else float("inf")
 
     # Max drawdown
     equity_curve = [initial_equity] + [t["equity"] for t in closed]
-    peak = equity_curve[0]
-    max_dd = 0.0
+    peak, max_dd = equity_curve[0], 0.0
     for e in equity_curve:
-        if e > peak:
-            peak = e
+        if e > peak: peak = e
         dd = (peak - e) / peak * 100
-        if dd > max_dd:
-            max_dd = dd
+        if dd > max_dd: max_dd = dd
 
     trend_trades    = [t for t in closed if t["type"] == "Trend"]
     reversal_trades = [t for t in closed if t["type"] == "Reversal"]
-    trend_wr        = len([t for t in trend_trades    if t["result"]=="TP"]) \
-                      / len(trend_trades)    * 100 if trend_trades    else 0
-    reversal_wr     = len([t for t in reversal_trades if t["result"]=="TP"]) \
-                      / len(reversal_trades) * 100 if reversal_trades else 0
+    trend_wr    = len([t for t in trend_trades    if t["result"] == "TP"]) \
+                  / len(trend_trades)    * 100 if trend_trades    else 0
+    reversal_wr = len([t for t in reversal_trades if t["result"] == "TP"]) \
+                  / len(reversal_trades) * 100 if reversal_trades else 0
 
     final_equity = closed[-1]["equity"]
 
     return {
-        "total_trades":   len(closed),
-        "wins":           len(wins),
-        "losses":         len(losses),
-        "win_rate":       round(win_rate, 1),
-        "total_pnl":      round(total_pnl, 2),
-        "avg_win":        round(avg_win, 2),
-        "avg_loss":       round(avg_loss, 2),
-        "profit_factor":  round(profit_factor, 2),
-        "max_drawdown":   round(max_dd, 1),
-        "final_equity":   round(final_equity, 2),
-        "return_pct":     round((final_equity - initial_equity) / initial_equity * 100, 2),
-        "trend_wr":       round(trend_wr, 1),
-        "reversal_wr":    round(reversal_wr, 1),
-        "open_trades":    len([t for t in trades if t["result"] == "OPEN"]),
+        "total_trades":  len(closed),
+        "wins":          len(wins),
+        "losses":        len(losses),
+        "win_rate":      round(win_rate, 1),
+        "total_pnl":     round(total_pnl, 2),
+        "avg_win":       round(avg_win, 2),
+        "avg_loss":      round(avg_loss, 2),
+        "profit_factor": round(profit_factor, 2),
+        "max_drawdown":  round(max_dd, 1),
+        "final_equity":  round(final_equity, 2),
+        "return_pct":    round((final_equity - initial_equity) / initial_equity * 100, 2),
+        "trend_wr":      round(trend_wr, 1),
+        "reversal_wr":   round(reversal_wr, 1),
+        "open_trades":   len([t for t in trades if t["result"] == "OPEN"]),
     }
 
 # ──────────────────────────────
-# REPORT BUILDER
+# REPORT
 # ──────────────────────────────
 def build_report(stats: dict, trades: list[dict], symbol: str) -> str:
     now = datetime.now(WAT).strftime("%Y-%m-%d %H:%M")
@@ -281,28 +264,27 @@ def build_report(stats: dict, trades: list[dict], symbol: str) -> str:
         return (
             f"📉 <b>{symbol} Backtest — {LOOKBACK_DAYS}d</b>\n"
             f"No closed trades found in this period.\n"
-            f"Strategy may be too selective — consider loosening filters.\n"
+            f"Strategy may be too selective — loosen MIN_BODY_RATIO or RSI zones.\n"
             f"Run: {now} WAT"
         )
 
     grade = (
-        "🏆 Excellent" if stats["win_rate"] >= 60 and stats["profit_factor"] >= 2 else
+        "🏆 Excellent" if stats["win_rate"] >= 60 and stats["profit_factor"] >= 2   else
         "✅ Good"      if stats["win_rate"] >= 50 and stats["profit_factor"] >= 1.5 else
-        "⚠️ Marginal"  if stats["profit_factor"] >= 1 else
+        "⚠️ Marginal"  if stats["profit_factor"] >= 1                               else
         "❌ Needs Work"
     )
 
-    # Last 5 trades summary
     closed = [t for t in trades if t["result"] != "OPEN"][-5:]
     trade_log = ""
     for t in closed:
         icon = "🟢" if t["result"] == "TP" else "🔴"
-        entry_time = t["entry_time"].strftime("%m-%d %H:%M") \
-                     if hasattr(t["entry_time"], "strftime") else str(t["entry_time"])
+        ts   = t["entry_time"].strftime("%m-%d %H:%M") \
+               if hasattr(t["entry_time"], "strftime") else str(t["entry_time"])
         trade_log += (
             f"{icon} {t['direction']} {t['type']} | "
-            f"Entry {t['entry']} → {t['result']} "
-            f"${t['pnl_dollar']:+.0f} [{entry_time}]\n"
+            f"Entry {t['entry']:.2f} → {t['result']} "
+            f"${t['pnl_dollar']:+.0f} [{ts}]\n"
         )
 
     return (
@@ -341,14 +323,11 @@ def main():
 
     for symbol in SYMBOLS:
         print(f"[INFO] Fetching data for {symbol}...")
-
-        # Twelve Data max on free tier: 500 bars
-        # 1h × 500 = ~21 days, so fetch max and trim to LOOKBACK_DAYS
         df_1h = fetch_data(symbol, "1h",   500)
         df_1d = fetch_data(symbol, "1day", 60)
 
         if df_1h is None or df_1d is None:
-            print(f"[ERROR] Could not fetch data for {symbol}")
+            print(f"[ERROR] No data for {symbol}")
             continue
 
         # Trim to lookback window
@@ -357,27 +336,25 @@ def main():
         df_1d  = df_1d[df_1d["datetime"] >= cutoff].reset_index(drop=True)
 
         if len(df_1h) < BB_PERIOD + 5:
-            print(f"[WARN] Not enough 1h bars ({len(df_1h)}) for {symbol}")
+            print(f"[WARN] Not enough bars ({len(df_1h)}) for {symbol}")
             continue
 
-        print(f"[INFO] {len(df_1h)} × 1h bars | {len(df_1d)} × 1d bars")
+        print(f"[INFO] {len(df_1h)} × 1h | {len(df_1d)} × 1d bars")
 
-        # Compute indicators
         df_1h = compute_indicators(df_1h)
         df_1d["bb_upper"], df_1d["bb_mid"], df_1d["bb_lower"] = bollinger_bands(
             df_1d["close"], BB_PERIOD, BB_STDDEV
         )
 
-        # Run simulation
         print("[INFO] Simulating trades...")
         trades = simulate_trades(df_1h, df_1d)
-        print(f"[INFO] {len(trades)} trades found")
+        print(f"[INFO] {len(trades)} trades found "
+              f"({len([t for t in trades if t['result'] != 'OPEN'])} closed, "
+              f"{len([t for t in trades if t['result'] == 'OPEN'])} open)")
 
-        # Calculate stats
         stats  = calc_stats(trades, INITIAL_EQUITY)
-
-        # Build and send report
         report = build_report(stats, trades, symbol)
+
         print(report)
         send_alert(report)
         print("[INFO] Report sent to Telegram ✅")
