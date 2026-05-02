@@ -9,40 +9,42 @@ SCOPE = [
     "https://www.googleapis.com/auth/drive"
 ]
 
-# Load service account
 creds_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 if not creds_json:
     raise ValueError("GOOGLE_SERVICE_ACCOUNT_JSON secret is not set!")
 
-creds_dict = json.loads(creds_json)
-creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPE)
+creds = Credentials.from_service_account_info(
+    json.loads(creds_json), scopes=SCOPE
+)
 gc = gspread.authorize(creds)
 sheet = gc.open(SHEET_NAME).sheet1
 
-# In-memory cache to minimize Google Sheets reads
-_signal_cache = {}
+# ── In-memory cache — load once per run ──────────────
+_cache: dict = {}
+_loaded: bool = False
 
-def _load_cache():
-    global _signal_cache
-    if not _signal_cache:
+def _load():
+    global _cache, _loaded
+    if not _loaded:
         records = sheet.get_all_records()
-        _signal_cache = {row["symbol"]: row["last_signal"] for row in records}
+        _cache = {r["symbol"]: r["last_signal"] for r in records}
+        _loaded = True
 
-def get_last_signal(symbol):
-    _load_cache()
-    return _signal_cache.get(symbol)
+def get_last_signal(symbol: str) -> str | None:
+    _load()
+    return _cache.get(symbol)
 
-def set_last_signal(symbol, signal):
-    _load_cache()
-    # Only update if changed
-    if _signal_cache.get(symbol) == signal:
-        return
-    _signal_cache[symbol] = signal
+def set_last_signal(symbol: str, signal: str):
+    _load()
+    if _cache.get(symbol) == signal:
+        return   # no change, skip write
 
+    _cache[symbol] = signal
+
+    # Find and update existing row, or append
     records = sheet.get_all_records()
     for i, row in enumerate(records, start=2):
         if row.get("symbol") == symbol:
             sheet.update_cell(i, 2, signal)
             return
-    # If new symbol
     sheet.append_row([symbol, signal])
