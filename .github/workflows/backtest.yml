@@ -1,0 +1,43 @@
+# .github/workflows/backtest.yml
+name: XAU/USD Backtest
+
+on:
+  workflow_dispatch:        # manual trigger only
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Cache HuggingFace FinBERT model
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.cache
+          key: finbert-tone-v1
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Backtest
+        run: python backtest.py
+        env:
+          TD_API_KEYS:                  ${{ secrets.TD_API_KEYS }}
+          TELEGRAM_BOT_TOKEN:           ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:             ${{ secrets.TELEGRAM_CHAT_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON:  ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
