@@ -8,7 +8,7 @@ from helpers import fetch_data, send_alert, rsi, bollinger_bands, atr
 # ──────────────────────────────
 SYMBOLS        = ["XAU/USD"]
 INITIAL_EQUITY = 10_000
-RISK_PER_TRADE = 0.01        # 1% risk per trade
+RISK_PER_TRADE = 0.01
 LOOKBACK_DAYS  = 30
 WAT            = timezone(timedelta(hours=1))
 
@@ -38,13 +38,29 @@ def strong_candle(candle, direction: str) -> bool:
            else (candle["close"] < candle["open"])
 
 def daily_bias(df_1d: pd.DataFrame, idx: int) -> str | None:
-    """2-candle majority vote up to idx on daily frame."""
-    window = df_1d.iloc[max(0, idx - 1): idx + 1]
-    if len(window) < 1:
+    """
+    Structural bias — daily BB midline + 5-candle majority vote.
+    Prevents BUY signals in falling markets and vice versa.
+    """
+    if idx < 4:
         return None
-    bulls = sum(1 for _, c in window.iterrows() if c["close"] > c["open"])
-    if bulls >= 1: return "BUY"
-    return "SELL"
+
+    last1d = df_1d.iloc[idx]
+
+    if pd.isna(last1d.get("bb_mid", float("nan"))):
+        return None
+
+    price_above_mid = last1d["close"] > last1d["bb_mid"]
+
+    window = df_1d.iloc[max(0, idx - 4): idx + 1]
+    bulls  = sum(1 for _, c in window.iterrows() if c["close"] > c["open"])
+
+    if price_above_mid and bulls >= 3:
+        return "BUY"
+    if not price_above_mid and bulls <= 2:
+        return "SELL"
+
+    return None
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -60,10 +76,6 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 # ──────────────────────────────
 def scan_signal(df_1h: pd.DataFrame, i: int,
                 df_1d: pd.DataFrame, d_idx: int):
-    """
-    Evaluate signal at bar i.
-    Returns (direction, signal_type, sl, tp) or (None, None, None, None)
-    """
     if i < 1:
         return None, None, None, None
 
@@ -220,7 +232,6 @@ def calc_stats(trades: list[dict], initial_equity: float) -> dict:
         sum(t["pnl_dollar"] for t in losses)
     ) if losses else float("inf")
 
-    # Max drawdown
     equity_curve = [initial_equity] + [t["equity"] for t in closed]
     peak, max_dd = equity_curve[0], 0.0
     for e in equity_curve:
@@ -330,7 +341,6 @@ def main():
             print(f"[ERROR] No data for {symbol}")
             continue
 
-        # Trim to lookback window
         cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=LOOKBACK_DAYS)
         df_1h  = df_1h[df_1h["datetime"] >= cutoff].reset_index(drop=True)
         df_1d  = df_1d[df_1d["datetime"] >= cutoff].reset_index(drop=True)
