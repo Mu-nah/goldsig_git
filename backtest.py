@@ -37,6 +37,24 @@ def strong_candle(candle, direction: str) -> bool:
     return (candle["close"] > candle["open"]) if direction == "BUY" \
            else (candle["close"] < candle["open"])
 
+def away_from_swing(df_1h: pd.DataFrame, i: int,
+                    direction: str, lookback: int = 12) -> bool:
+    """
+    Avoid entering SELL near recent swing low or BUY near recent swing high.
+    Prevents fading into support/resistance walls.
+    """
+    start      = max(0, i - lookback)
+    recent     = df_1h.iloc[start: i + 1]
+    price      = df_1h.iloc[i]["close"]
+    atr_val    = df_1h.iloc[i]["atr"]
+
+    if direction == "SELL":
+        swing_low = recent["low"].min()
+        return price > swing_low + atr_val
+    else:
+        swing_high = recent["high"].max()
+        return price < swing_high - atr_val
+
 def daily_bias(df_1d: pd.DataFrame, idx: int) -> str | None:
     """
     Structural bias — daily BB midline + 5-candle majority vote.
@@ -97,23 +115,25 @@ def scan_signal(df_1h: pd.DataFrame, i: int,
     if not inside_daily_bb:
         return None, None, None, None
 
-    direction  = None
-    sig_type   = None
+    direction = None
+    sig_type  = None
 
-    # Trend continuation — single candle
+    # Trend continuation — single candle + swing filter
     if (bias == "BUY"
             and price > last1h["bb_mid"]
             and RSI_BULL_ZONE < rsi_val < RSI_OVERBOUGHT
-            and strong_candle(last1h, "BUY")):
+            and strong_candle(last1h, "BUY")
+            and away_from_swing(df_1h, i, "BUY")):
         direction, sig_type = "BUY", "Trend"
 
     elif (bias == "SELL"
             and price < last1h["bb_mid"]
             and RSI_OVERSOLD < rsi_val < RSI_BULL_ZONE
-            and strong_candle(last1h, "SELL")):
+            and strong_candle(last1h, "SELL")
+            and away_from_swing(df_1h, i, "SELL")):
         direction, sig_type = "SELL", "Trend"
 
-    # Mean reversion
+    # Mean reversion at BB extremes
     elif (bias == "BUY"
             and price <= last1h["bb_lower"]
             and rsi_val <= RSI_OVERSOLD
@@ -141,9 +161,9 @@ def scan_signal(df_1h: pd.DataFrame, i: int,
 # ──────────────────────────────
 def simulate_trades(df_1h: pd.DataFrame,
                     df_1d: pd.DataFrame) -> list[dict]:
-    trades  = []
-    equity  = INITIAL_EQUITY
-    trade   = None
+    trades = []
+    equity = INITIAL_EQUITY
+    trade  = None
 
     df_1h = df_1h.copy()
     df_1d = df_1d.copy()
@@ -225,7 +245,7 @@ def calc_stats(trades: list[dict], initial_equity: float) -> dict:
 
     total_pnl     = sum(t["pnl_dollar"] for t in closed)
     win_rate      = len(wins) / len(closed) * 100
-    avg_win       = sum(t["pnl_dollar"] for t in wins)   / len(wins)   if wins   else 0
+    avg_win       = sum(t["pnl_dollar"] for t in wins)    / len(wins)   if wins   else 0
     avg_loss      = sum(t["pnl_dollar"] for t in losses)  / len(losses) if losses else 0
     profit_factor = abs(
         sum(t["pnl_dollar"] for t in wins) /
