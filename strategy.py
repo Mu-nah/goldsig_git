@@ -1,3 +1,4 @@
+import pandas as pd
 from helpers import rsi, bollinger_bands, atr
 
 SYMBOLS        = ["XAU/USD"]
@@ -24,13 +25,29 @@ def _strong_candle(candle, direction: str) -> bool:
            else (candle["close"] < candle["open"])
 
 def _daily_bias(df_1d) -> str | None:
-    """2-candle majority vote on daily frame."""
-    window = df_1d.iloc[-2:]
-    if len(window) < 1:
+    """
+    Structural bias — daily BB midline + 5-candle majority vote.
+    Prevents BUY signals in falling markets and vice versa.
+    """
+    if len(df_1d) < 5:
         return None
-    bulls = sum(1 for _, c in window.iterrows() if c["close"] > c["open"])
-    if bulls >= 1: return "BUY"
-    return "SELL"
+
+    last1d = df_1d.iloc[-1]
+
+    if pd.isna(last1d.get("bb_mid", float("nan"))):
+        return None
+
+    price_above_mid = last1d["close"] > last1d["bb_mid"]
+
+    last5 = df_1d.iloc[-5:]
+    bulls = sum(1 for _, c in last5.iterrows() if c["close"] > c["open"])
+
+    if price_above_mid and bulls >= 3:
+        return "BUY"
+    if not price_above_mid and bulls <= 2:
+        return "SELL"
+
+    return None  # conflicting — sit out
 
 def generate_signal(df_1h, df_1d, sentiment_bias: int = 0):
     """
@@ -53,7 +70,7 @@ def generate_signal(df_1h, df_1d, sentiment_bias: int = 0):
     price   = last1h["close"]
     atr_val = last1h["atr"]
 
-    if any(map(lambda x: x != x, [rsi_val, atr_val])) or atr_val == 0:
+    if pd.isna(rsi_val) or pd.isna(atr_val) or atr_val == 0:
         return None, last1h, None, None, None
 
     # ── Filters ─────────────────────────────────────
@@ -66,7 +83,7 @@ def generate_signal(df_1h, df_1d, sentiment_bias: int = 0):
         return None, last1h, None, None, None
 
     # ── Signal Detection ────────────────────────────
-    direction  = None
+    direction   = None
     signal_type = None
 
     # Trend continuation — single candle confirmation
