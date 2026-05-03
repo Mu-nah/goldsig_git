@@ -39,10 +39,9 @@ def strong_candle(candle, direction: str) -> bool:
 
 def clean_recent(df_1h: pd.DataFrame, i: int, lookback: int = 20) -> pd.DataFrame:
     """
-    Single source of truth for swing window.
-    Absolute floors for XAU/USD:
-    - low > 100  → filters zero/corrupted candles (gold never < $100)
-    - range >= 1.0 → filters flat/illiquid candles (< $1 range is noise)
+    Strict filtering for SWING window only.
+    Filters zero lows AND flat candles (< $1 range).
+    Does NOT affect indicator calculations.
     """
     start  = max(0, i - lookback)
     recent = df_1h.iloc[start: i + 1].copy()
@@ -105,10 +104,13 @@ def weekly_bias_at(df_1w: pd.DataFrame, w_idx: int) -> str | None:
     return "BUY" if last["close"] > last["ema20"] else "SELL"
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Only filters zero/negative lows — preserves flat candles
+    so RSI/BB/ATR continuity is not broken.
+    Flat candles are valid price action for indicator purposes.
+    """
     df = df.copy()
-    # Absolute floors — same logic as clean_recent
-    df = df[df["low"] > 100]
-    df = df[df["high"] - df["low"] >= 1.0].reset_index(drop=True)
+    df = df[df["low"] > 0].reset_index(drop=True)
     df["rsi"] = rsi(df["close"], RSI_PERIOD)
     df["bb_upper"], df["bb_mid"], df["bb_lower"] = bollinger_bands(
         df["close"], BB_PERIOD, BB_STDDEV
