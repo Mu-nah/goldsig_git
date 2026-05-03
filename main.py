@@ -19,7 +19,6 @@ def main():
             print(f"[WARN] No data for {symbol}, skipping.")
             continue
 
-        # Sentiment fetched once, cached for this run
         pos, neg, neu, bias = analyze_sentiment(symbol)
 
         signal, last1h, sig_type, sl, tp = generate_signal(
