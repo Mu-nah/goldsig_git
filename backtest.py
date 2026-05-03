@@ -40,15 +40,15 @@ def strong_candle(candle, direction: str) -> bool:
 def clean_recent(df_1h: pd.DataFrame, i: int, lookback: int = 20) -> pd.DataFrame:
     """
     Single source of truth for swing window.
-    Filters zero lows AND flat/illiquid candles (range < 10% ATR).
+    Absolute floors for XAU/USD:
+    - low > 100  → filters zero/corrupted candles (gold never < $100)
+    - range >= 1.0 → filters flat/illiquid candles (< $1 range is noise)
     """
-    start   = max(0, i - lookback)
-    recent  = df_1h.iloc[start: i + 1].copy()
-    atr_val = df_1h.iloc[i]["atr"] if not pd.isna(df_1h.iloc[i]["atr"]) else 1
-    min_range = atr_val * 0.10
+    start  = max(0, i - lookback)
+    recent = df_1h.iloc[start: i + 1].copy()
     recent = recent[
-        (recent["low"] > 0) &
-        (recent["high"] - recent["low"] >= min_range)
+        (recent["low"] > 100) &
+        (recent["high"] - recent["low"] >= 1.0)
     ]
     return recent
 
@@ -95,7 +95,7 @@ def weekly_bias_at(df_1w: pd.DataFrame, w_idx: int) -> str | None:
     if df_1w is None or w_idx < 19:
         return None
     window = df_1w.iloc[: w_idx + 1].copy()
-    window = window[window["low"] > 0]
+    window = window[window["low"] > 100]
     if len(window) < 20:
         return None
     window["ema20"] = window["close"].ewm(span=20, adjust=False).mean()
@@ -106,9 +106,9 @@ def weekly_bias_at(df_1w: pd.DataFrame, w_idx: int) -> str | None:
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    # Remove zero lows and flat/illiquid candles
-    df = df[df["low"] > 0]
-    df = df[df["high"] - df["low"] > 0.01].reset_index(drop=True)
+    # Absolute floors — same logic as clean_recent
+    df = df[df["low"] > 100]
+    df = df[df["high"] - df["low"] >= 1.0].reset_index(drop=True)
     df["rsi"] = rsi(df["close"], RSI_PERIOD)
     df["bb_upper"], df["bb_mid"], df["bb_lower"] = bollinger_bands(
         df["close"], BB_PERIOD, BB_STDDEV
