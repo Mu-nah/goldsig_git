@@ -10,7 +10,7 @@ INITIAL_EQUITY = 10_000
 RISK_PER_TRADE = 0.01
 LOOKBACK_DAYS  = 60
 WAT            = timezone(timedelta(hours=1))
-COOLDOWN_BARS  = 10
+COOLDOWN_BARS  = 20        # extended from 10
 
 RSI_PERIOD     = 14
 BB_PERIOD      = 20
@@ -22,6 +22,7 @@ TP_MULTIPLIER  = 2.5
 RSI_OVERSOLD   = 30
 RSI_OVERBOUGHT = 70
 RSI_BULL_ZONE  = 48
+RSI_BUY_MAX    = 58        # tighter RSI cap for BUY Trend only
 MIN_BODY_RATIO = 0.25
 
 # ──────────────────────────────
@@ -39,10 +40,21 @@ def strong_candle(candle, direction: str) -> bool:
 
 def away_from_swing(df_1h: pd.DataFrame, i: int,
                     direction: str, lookback: int = 20) -> bool:
-    start     = max(0, i - lookback)
-    recent    = df_1h.iloc[start: i + 1]
+    start  = max(0, i - lookback)
+    recent = df_1h.iloc[start: i + 1]
+
+    # Filter bad/zero candles
+    recent = recent[recent["low"] > 0]
+    if recent.empty:
+        return False
+
     price     = df_1h.iloc[i]["close"]
+    atr_val   = df_1h.iloc[i]["atr"]
     avg_range = (recent["high"] - recent["low"]).mean()
+
+    # Floor avg_range at 0.5x ATR — prevents tiny ranges passing bad trades
+    avg_range = max(avg_range, atr_val * 0.5)
+
     if direction == "SELL":
         return price > recent["low"].min() + (avg_range * 2)
     return price < recent["high"].max() - (avg_range * 2)
@@ -72,6 +84,7 @@ def weekly_bias_at(df_1w: pd.DataFrame, w_idx: int) -> str | None:
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
+    df = df[df["low"] > 0].reset_index(drop=True)  # remove bad candles
     df["rsi"] = rsi(df["close"], RSI_PERIOD)
     df["bb_upper"], df["bb_mid"], df["bb_lower"] = bollinger_bands(
         df["close"], BB_PERIOD, BB_STDDEV
@@ -111,20 +124,24 @@ def scan_signal(df_1h: pd.DataFrame, i: int,
     if not inside_daily_bb:
         return None, None, None, None
 
-    # ── Swing debug values ───────────────────────────
+    # Debug values
     start      = max(0, i - 20)
-    recent     = df_1h.iloc[start: i + 1]
-    avg_range  = (recent["high"] - recent["low"]).mean()
-    swing_high = recent["high"].max()
-    swing_low  = recent["low"].min()
+    recent_dbg = df_1h.iloc[start: i + 1]
+    recent_dbg = recent_dbg[recent_dbg["low"] > 0]
+    avg_range  = (recent_dbg["high"] - recent_dbg["low"]).mean() \
+                 if not recent_dbg.empty else 0
+    avg_range  = max(avg_range, atr_val * 0.5)
+    swing_high = recent_dbg["high"].max() if not recent_dbg.empty else 0
+    swing_low  = recent_dbg["low"].min()  if not recent_dbg.empty else 0
     needed     = avg_range * 2
 
     direction = None
     sig_type  = None
 
+    # Trend continuation — tighter RSI_BUY_MAX for BUY
     if (bias == "BUY"
             and price > last1h["bb_mid"]
-            and RSI_BULL_ZONE < rsi_val < RSI_OVERBOUGHT
+            and RSI_BULL_ZONE < rsi_val < RSI_BUY_MAX
             and strong_candle(last1h, "BUY")
             and away_from_swing(df_1h, i, "BUY")):
         direction, sig_type = "BUY", "Trend"
@@ -262,7 +279,6 @@ def simulate_trades(df_1h: pd.DataFrame,
                 "entry_time": bar["datetime"],
             }
 
-    # Mark any still-open trade
     if trade:
         trade.update({
             "exit": None, "exit_time": None,
