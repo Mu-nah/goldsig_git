@@ -40,12 +40,17 @@ def strong_candle(candle, direction: str) -> bool:
 def clean_recent(df_1h: pd.DataFrame, i: int, lookback: int = 20) -> pd.DataFrame:
     """
     Single source of truth for swing window.
-    Used by both away_from_swing and scan_signal debug.
-    Filters zero/bad candles consistently.
+    Filters zero lows AND flat/illiquid candles (range < 10% ATR).
     """
-    start  = max(0, i - lookback)
-    recent = df_1h.iloc[start: i + 1].copy()
-    return recent[recent["low"] > 0]
+    start   = max(0, i - lookback)
+    recent  = df_1h.iloc[start: i + 1].copy()
+    atr_val = df_1h.iloc[i]["atr"] if not pd.isna(df_1h.iloc[i]["atr"]) else 1
+    min_range = atr_val * 0.10
+    recent = recent[
+        (recent["low"] > 0) &
+        (recent["high"] - recent["low"] >= min_range)
+    ]
+    return recent
 
 def away_from_swing(df_1h: pd.DataFrame, i: int,
                     direction: str, lookback: int = 20) -> bool:
@@ -56,20 +61,16 @@ def away_from_swing(df_1h: pd.DataFrame, i: int,
     price      = df_1h.iloc[i]["close"]
     atr_val    = df_1h.iloc[i]["atr"]
     avg_range  = (recent["high"] - recent["low"]).mean()
-    avg_range  = max(avg_range, atr_val * 1.0)   # ATR floor
+    avg_range  = max(avg_range, atr_val * 1.0)
     swing_high = recent["high"].max()
     swing_low  = recent["low"].min()
 
     if direction == "SELL":
-        threshold = swing_low + (avg_range * 2)
-        return price > threshold
-    else:
-        threshold = swing_high - (avg_range * 2)
-        return price < threshold
+        return price > swing_low + (avg_range * 2)
+    return price < swing_high - (avg_range * 2)
 
 def in_sl_zone(price: float, direction: str,
                sl_zones: list[dict], atr_val: float) -> bool:
-    """Block re-entry within 1 ATR of recent SL exit price."""
     for zone in sl_zones:
         if zone["direction"] != direction:
             continue
@@ -94,7 +95,7 @@ def weekly_bias_at(df_1w: pd.DataFrame, w_idx: int) -> str | None:
     if df_1w is None or w_idx < 19:
         return None
     window = df_1w.iloc[: w_idx + 1].copy()
-    window = window[window["low"] > 0]    # filter bad weekly candles
+    window = window[window["low"] > 0]
     if len(window) < 20:
         return None
     window["ema20"] = window["close"].ewm(span=20, adjust=False).mean()
@@ -105,7 +106,9 @@ def weekly_bias_at(df_1w: pd.DataFrame, w_idx: int) -> str | None:
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df = df[df["low"] > 0].reset_index(drop=True)
+    # Remove zero lows and flat/illiquid candles
+    df = df[df["low"] > 0]
+    df = df[df["high"] - df["low"] > 0.01].reset_index(drop=True)
     df["rsi"] = rsi(df["close"], RSI_PERIOD)
     df["bb_upper"], df["bb_mid"], df["bb_lower"] = bollinger_bands(
         df["close"], BB_PERIOD, BB_STDDEV
@@ -174,7 +177,6 @@ def scan_signal(df_1h: pd.DataFrame, i: int,
             and strong_candle(last1h, "SELL")):
         direction, sig_type = "SELL", "Reversal"
 
-    # ── Debug using same clean_recent as away_from_swing ──
     if debug:
         recent_dbg = clean_recent(df_1h, i)
         avg_range  = (recent_dbg["high"] - recent_dbg["low"]).mean() \
@@ -186,6 +188,8 @@ def scan_signal(df_1h: pd.DataFrame, i: int,
         bar_time   = df_1h.iloc[i]["datetime"] \
                      if "datetime" in df_1h.columns else i
         label      = direction if direction else "NO-SIGNAL"
+        swing_ok   = away_from_swing(df_1h, i, direction) \
+                     if direction else "-"
         print(
             f"[SIGNAL] {label} {sig_type or '-'} | "
             f"Time: {bar_time} | "
@@ -194,8 +198,7 @@ def scan_signal(df_1h: pd.DataFrame, i: int,
             f"SwingHigh: {swing_high:.2f} | SwingLow: {swing_low:.2f} | "
             f"GapToHigh: {swing_high - price:.2f} | "
             f"GapToLow: {price - swing_low:.2f} | "
-            f"Needed: {needed:.2f} | "
-            f"SwingOK: {away_from_swing(df_1h, i, direction) if direction else '-'}"
+            f"Needed: {needed:.2f} | SwingOK: {swing_ok}"
         )
 
     if not direction:
@@ -245,10 +248,8 @@ def simulate_trades(df_1h: pd.DataFrame,
         d_idx = get_d_idx(bar["date"])
         w_idx = get_w_idx(bar["date"]) if w_dates else 0
 
-        # Expire SL zones older than 30 bars
         sl_zones = [z for z in sl_zones if i - z["bar"] <= 30]
 
-        # ── Check open trade ──────────────────────────
         if trade:
             hit_sl = (trade["direction"] == "BUY"  and bar["low"]  <= trade["sl"]) or \
                      (trade["direction"] == "SELL" and bar["high"] >= trade["sl"])
@@ -287,7 +288,6 @@ def simulate_trades(df_1h: pd.DataFrame,
                 trade = None
             continue
 
-        # ── Look for new signal ───────────────────────
         direction, sig_type, sl, tp = scan_signal(
             df_1h, i, df_1d, d_idx, df_1w_copy, w_idx, debug=True
         )
