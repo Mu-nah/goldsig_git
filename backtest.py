@@ -8,7 +8,7 @@ from helpers import fetch_data, send_alert, rsi, bollinger_bands, atr
 SYMBOLS        = ["XAU/USD"]
 INITIAL_EQUITY = 10_000
 RISK_PER_TRADE = 0.01
-LOOKBACK_DAYS  = 30
+LOOKBACK_DAYS  = 60
 WAT            = timezone(timedelta(hours=1))
 COOLDOWN_BARS  = 10    # bars to skip after an SL before re-entering same direction
 
