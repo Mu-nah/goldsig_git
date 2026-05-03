@@ -364,7 +364,7 @@ def main():
     for symbol in SYMBOLS:
         print(f"[INFO] Fetching data for {symbol}...")
         df_1h = fetch_data(symbol, "1h",   500)
-        df_1d = fetch_data(symbol, "1day", 60)
+        df_1d = fetch_data(symbol, "1day", 120)
 
         if df_1h is None or df_1d is None:
             print(f"[ERROR] No data for {symbol}")
