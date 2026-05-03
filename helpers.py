@@ -1,5 +1,6 @@
 import os
 import asyncio
+import warnings
 import requests
 import pandas as pd
 import feedparser
@@ -9,6 +10,8 @@ from telegram import Bot
 from telegram.request import HTTPXRequest
 from telegram.error import TimedOut, NetworkError
 from urllib.parse import quote
+
+warnings.filterwarnings("ignore", category=FutureWarning, module="huggingface_hub")
 
 SYMBOLS = ["XAU/USD"]
 API_KEYS = os.getenv("TD_API_KEYS", "").split(",")
@@ -134,8 +137,7 @@ def analyze_sentiment(symbol: str, force: bool = False):
     pos   = summary["Positive"] / total * 100
     neg   = summary["Negative"] / total * 100
     neu   = summary["Neutral"]  / total * 100
-
-    bias = 1 if pos - neg >= 20 else -1 if neg - pos >= 20 else 0
+    bias  = 1 if pos - neg >= 20 else -1 if neg - pos >= 20 else 0
 
     result = (pos, neg, neu, bias)
     _sentiment_cache[symbol] = result
