@@ -10,7 +10,6 @@ INITIAL_EQUITY = 10_000
 RISK_PER_TRADE = 0.01
 LOOKBACK_DAYS  = 60
 WAT            = timezone(timedelta(hours=1))
-COOLDOWN_BARS  = 20        # extended from 10
 
 RSI_PERIOD     = 14
 BB_PERIOD      = 20
@@ -22,7 +21,7 @@ TP_MULTIPLIER  = 2.5
 RSI_OVERSOLD   = 30
 RSI_OVERBOUGHT = 70
 RSI_BULL_ZONE  = 48
-RSI_BUY_MAX    = 58        # tighter RSI cap for BUY Trend only
+RSI_BUY_MAX    = 58
 MIN_BODY_RATIO = 0.25
 
 # ──────────────────────────────
@@ -42,8 +41,6 @@ def away_from_swing(df_1h: pd.DataFrame, i: int,
                     direction: str, lookback: int = 20) -> bool:
     start  = max(0, i - lookback)
     recent = df_1h.iloc[start: i + 1]
-
-    # Filter bad/zero candles
     recent = recent[recent["low"] > 0]
     if recent.empty:
         return False
@@ -52,12 +49,26 @@ def away_from_swing(df_1h: pd.DataFrame, i: int,
     atr_val   = df_1h.iloc[i]["atr"]
     avg_range = (recent["high"] - recent["low"]).mean()
 
-    # Floor avg_range at 0.5x ATR — prevents tiny ranges passing bad trades
-    avg_range = max(avg_range, atr_val * 0.5)
+    # Floor at 1.0x ATR — strong enough to block tight-range traps
+    avg_range = max(avg_range, atr_val * 1.0)
 
     if direction == "SELL":
         return price > recent["low"].min() + (avg_range * 2)
     return price < recent["high"].max() - (avg_range * 2)
+
+def in_sl_zone(price: float, direction: str,
+               sl_zones: list[dict], atr_val: float) -> bool:
+    """
+    Block re-entry if new signal price is within 1 ATR
+    of a recent SL exit price in the same direction.
+    Zones expire after 30 bars.
+    """
+    for zone in sl_zones:
+        if zone["direction"] != direction:
+            continue
+        if abs(price - zone["price"]) <= atr_val * 1.0:
+            return True
+    return False
 
 def daily_bias(df_1d: pd.DataFrame, idx: int) -> str | None:
     if idx < 4:
@@ -84,7 +95,7 @@ def weekly_bias_at(df_1w: pd.DataFrame, w_idx: int) -> str | None:
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df = df[df["low"] > 0].reset_index(drop=True)  # remove bad candles
+    df = df[df["low"] > 0].reset_index(drop=True)
     df["rsi"] = rsi(df["close"], RSI_PERIOD)
     df["bb_upper"], df["bb_mid"], df["bb_lower"] = bollinger_bands(
         df["close"], BB_PERIOD, BB_STDDEV
@@ -130,7 +141,7 @@ def scan_signal(df_1h: pd.DataFrame, i: int,
     recent_dbg = recent_dbg[recent_dbg["low"] > 0]
     avg_range  = (recent_dbg["high"] - recent_dbg["low"]).mean() \
                  if not recent_dbg.empty else 0
-    avg_range  = max(avg_range, atr_val * 0.5)
+    avg_range  = max(avg_range, atr_val * 1.0)
     swing_high = recent_dbg["high"].max() if not recent_dbg.empty else 0
     swing_low  = recent_dbg["low"].min()  if not recent_dbg.empty else 0
     needed     = avg_range * 2
@@ -138,7 +149,6 @@ def scan_signal(df_1h: pd.DataFrame, i: int,
     direction = None
     sig_type  = None
 
-    # Trend continuation — tighter RSI_BUY_MAX for BUY
     if (bias == "BUY"
             and price > last1h["bb_mid"]
             and RSI_BULL_ZONE < rsi_val < RSI_BUY_MAX
@@ -198,7 +208,7 @@ def simulate_trades(df_1h: pd.DataFrame,
     trades   = []
     equity   = INITIAL_EQUITY
     trade    = None
-    cooldown = {"BUY": 0, "SELL": 0}
+    sl_zones = []          # price-zone cooldown — smarter than bar cooldown
 
     df_1h = df_1h.copy()
     df_1d = df_1d.copy()
@@ -226,6 +236,9 @@ def simulate_trades(df_1h: pd.DataFrame,
         d_idx = get_d_idx(bar["date"])
         w_idx = get_w_idx(bar["date"]) if w_dates else 0
 
+        # Expire SL zones older than 30 bars
+        sl_zones = [z for z in sl_zones if i - z["bar"] <= 30]
+
         # ── Check open trade ──────────────────────────
         if trade:
             hit_sl = (trade["direction"] == "BUY"  and bar["low"]  <= trade["sl"]) or \
@@ -252,8 +265,15 @@ def simulate_trades(df_1h: pd.DataFrame,
                 trade["pnl_dollar"] = pnl_dollar
                 trade["equity"]     = equity
 
+                # Price-zone cooldown only on SL
                 if trade["result"] == "SL":
-                    cooldown[trade["direction"]] = i + COOLDOWN_BARS
+                    sl_zones.append({
+                        "direction": trade["direction"],
+                        "price":     exit_price,
+                        "bar":       i
+                    })
+                    print(f"[SL-ZONE] {trade['direction']} zone set at "
+                          f"{exit_price:.2f} bar {i}")
 
                 trades.append(trade)
                 trade = None
@@ -264,11 +284,14 @@ def simulate_trades(df_1h: pd.DataFrame,
             df_1h, i, df_1d, d_idx, df_1w_copy, w_idx, debug=True
         )
 
-        if direction and i < cooldown.get(direction, 0):
-            print(f"[COOLDOWN] {direction} blocked at bar {i}")
-            continue
-
         if direction:
+            atr_val = df_1h.iloc[i]["atr"]
+            price   = df_1h.iloc[i]["close"]
+
+            if in_sl_zone(price, direction, sl_zones, atr_val):
+                print(f"[SL-ZONE BLOCK] {direction} at {price:.2f} blocked")
+                continue
+
             trade = {
                 "symbol":     "XAU/USD",
                 "direction":  direction,
