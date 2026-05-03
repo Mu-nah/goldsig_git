@@ -10,7 +10,7 @@ INITIAL_EQUITY = 10_000
 RISK_PER_TRADE = 0.01
 LOOKBACK_DAYS  = 60
 WAT            = timezone(timedelta(hours=1))
-COOLDOWN_BARS  = 10    # bars to skip after an SL before re-entering same direction
+COOLDOWN_BARS  = 10
 
 RSI_PERIOD     = 14
 BB_PERIOD      = 20
@@ -39,44 +39,37 @@ def strong_candle(candle, direction: str) -> bool:
 
 def away_from_swing(df_1h: pd.DataFrame, i: int,
                     direction: str, lookback: int = 20) -> bool:
-    """
-    Price must be at least 2x average candle range away from swing high/low.
-    Prevents entries right at support/resistance walls.
-    """
     start     = max(0, i - lookback)
     recent    = df_1h.iloc[start: i + 1]
     price     = df_1h.iloc[i]["close"]
     avg_range = (recent["high"] - recent["low"]).mean()
-
     if direction == "SELL":
-        swing_low = recent["low"].min()
-        return price > swing_low + (avg_range * 2)
-    else:
-        swing_high = recent["high"].max()
-        return price < swing_high - (avg_range * 2)
+        return price > recent["low"].min() + (avg_range * 2)
+    return price < recent["high"].max() - (avg_range * 2)
 
 def daily_bias(df_1d: pd.DataFrame, idx: int) -> str | None:
-    """
-    Structural bias — daily BB midline + 5-candle majority vote.
-    """
     if idx < 4:
         return None
-
     last1d = df_1d.iloc[idx]
-
     if pd.isna(last1d.get("bb_mid", float("nan"))):
         return None
-
     price_above_mid = last1d["close"] > last1d["bb_mid"]
     window = df_1d.iloc[max(0, idx - 4): idx + 1]
     bulls  = sum(1 for _, c in window.iterrows() if c["close"] > c["open"])
-
-    if price_above_mid and bulls >= 3:
-        return "BUY"
-    if not price_above_mid and bulls <= 2:
-        return "SELL"
-
+    if price_above_mid and bulls >= 3: return "BUY"
+    if not price_above_mid and bulls <= 2: return "SELL"
     return None
+
+def weekly_bias_at(df_1w: pd.DataFrame, w_idx: int) -> str | None:
+    """Weekly EMA20 structure at bar w_idx."""
+    if df_1w is None or w_idx < 19:
+        return None
+    window = df_1w.iloc[: w_idx + 1].copy()
+    window["ema20"] = window["close"].ewm(span=20, adjust=False).mean()
+    last = window.iloc[-1]
+    if pd.isna(last["ema20"]):
+        return None
+    return "BUY" if last["close"] > last["ema20"] else "SELL"
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -91,7 +84,8 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 # SIGNAL SCANNER
 # ──────────────────────────────
 def scan_signal(df_1h: pd.DataFrame, i: int,
-                df_1d: pd.DataFrame, d_idx: int):
+                df_1d: pd.DataFrame, d_idx: int,
+                df_1w: pd.DataFrame = None, w_idx: int = 0):
     if i < 1:
         return None, None, None, None
 
@@ -109,6 +103,11 @@ def scan_signal(df_1h: pd.DataFrame, i: int,
     if bias is None:
         return None, None, None, None
 
+    # Weekly alignment
+    w_bias = weekly_bias_at(df_1w, w_idx)
+    if w_bias and w_bias != bias:
+        return None, None, None, None
+
     inside_daily_bb = last1d["bb_lower"] < last1d["close"] < last1d["bb_upper"]
     if not inside_daily_bb:
         return None, None, None, None
@@ -116,7 +115,6 @@ def scan_signal(df_1h: pd.DataFrame, i: int,
     direction = None
     sig_type  = None
 
-    # Trend continuation
     if (bias == "BUY"
             and price > last1h["bb_mid"]
             and RSI_BULL_ZONE < rsi_val < RSI_OVERBOUGHT
@@ -131,7 +129,6 @@ def scan_signal(df_1h: pd.DataFrame, i: int,
             and away_from_swing(df_1h, i, "SELL")):
         direction, sig_type = "SELL", "Trend"
 
-    # Mean reversion
     elif (bias == "BUY"
             and price <= last1h["bb_lower"]
             and rsi_val <= RSI_OVERSOLD
@@ -158,11 +155,12 @@ def scan_signal(df_1h: pd.DataFrame, i: int,
 # TRADE SIMULATOR
 # ──────────────────────────────
 def simulate_trades(df_1h: pd.DataFrame,
-                    df_1d: pd.DataFrame) -> list[dict]:
+                    df_1d: pd.DataFrame,
+                    df_1w: pd.DataFrame = None) -> list[dict]:
     trades   = []
     equity   = INITIAL_EQUITY
     trade    = None
-    cooldown = {"BUY": 0, "SELL": 0}   # bar index cooldown per direction
+    cooldown = {"BUY": 0, "SELL": 0}
 
     df_1h = df_1h.copy()
     df_1d = df_1d.copy()
@@ -170,13 +168,25 @@ def simulate_trades(df_1h: pd.DataFrame,
     df_1h["date"] = df_1h["datetime"].dt.date
     d_dates = df_1d["date"].tolist()
 
+    df_1w_copy = None
+    w_dates    = []
+    if df_1w is not None:
+        df_1w_copy = df_1w.copy()
+        df_1w_copy["date"] = df_1w_copy["datetime"].dt.date
+        w_dates = df_1w_copy["date"].tolist()
+
     def get_d_idx(date):
         matches = [i for i, d in enumerate(d_dates) if d <= date]
+        return matches[-1] if matches else 0
+
+    def get_w_idx(date):
+        matches = [i for i, d in enumerate(w_dates) if d <= date]
         return matches[-1] if matches else 0
 
     for i in range(BB_PERIOD + 1, len(df_1h)):
         bar   = df_1h.iloc[i]
         d_idx = get_d_idx(bar["date"])
+        w_idx = get_w_idx(bar["date"]) if w_dates else 0
 
         # ── Check open trade ──────────────────────────
         if trade:
@@ -204,7 +214,6 @@ def simulate_trades(df_1h: pd.DataFrame,
                 trade["pnl_dollar"] = pnl_dollar
                 trade["equity"]     = equity
 
-                # ── Cooldown after SL ─────────────────
                 if trade["result"] == "SL":
                     cooldown[trade["direction"]] = i + COOLDOWN_BARS
 
@@ -213,9 +222,10 @@ def simulate_trades(df_1h: pd.DataFrame,
             continue
 
         # ── Look for new signal ───────────────────────
-        direction, sig_type, sl, tp = scan_signal(df_1h, i, df_1d, d_idx)
+        direction, sig_type, sl, tp = scan_signal(
+            df_1h, i, df_1d, d_idx, df_1w_copy, w_idx
+        )
 
-        # Block if still in cooldown for this direction
         if direction and i < cooldown.get(direction, 0):
             continue
 
@@ -230,7 +240,6 @@ def simulate_trades(df_1h: pd.DataFrame,
                 "entry_time": bar["datetime"],
             }
 
-    # Mark any still-open trade
     if trade:
         trade.update({
             "exit": None, "exit_time": None,
@@ -363,8 +372,9 @@ def main():
 
     for symbol in SYMBOLS:
         print(f"[INFO] Fetching data for {symbol}...")
-        df_1h = fetch_data(symbol, "1h",   500)
-        df_1d = fetch_data(symbol, "1day", 120)
+        df_1h = fetch_data(symbol, "1h",    500)
+        df_1d = fetch_data(symbol, "1day",  120)
+        df_1w = fetch_data(symbol, "1week", 30)
 
         if df_1h is None or df_1d is None:
             print(f"[ERROR] No data for {symbol}")
@@ -378,7 +388,8 @@ def main():
             print(f"[WARN] Not enough bars ({len(df_1h)}) for {symbol}")
             continue
 
-        print(f"[INFO] {len(df_1h)} × 1h | {len(df_1d)} × 1d bars")
+        print(f"[INFO] {len(df_1h)} × 1h | {len(df_1d)} × 1d | "
+              f"{len(df_1w) if df_1w is not None else 0} × 1w bars")
 
         df_1h = compute_indicators(df_1h)
         df_1d["bb_upper"], df_1d["bb_mid"], df_1d["bb_lower"] = bollinger_bands(
@@ -386,7 +397,7 @@ def main():
         )
 
         print("[INFO] Simulating trades...")
-        trades = simulate_trades(df_1h, df_1d)
+        trades = simulate_trades(df_1h, df_1d, df_1w)
         print(f"[INFO] {len(trades)} trades found "
               f"({len([t for t in trades if t['result'] != 'OPEN'])} closed, "
               f"{len([t for t in trades if t['result'] == 'OPEN'])} open)")
