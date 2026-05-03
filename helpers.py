@@ -29,7 +29,11 @@ model = AutoModelForSequenceClassification.from_pretrained("yiyanghkust/finbert-
 # ── Telegram ──────────────────────────────────────────
 async def _send(msg: str):
     try:
-        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+        await bot.send_message(
+            chat_id=TELEGRAM_CHAT_ID,
+            text=msg,
+            parse_mode="HTML"
+        )
     except (TimedOut, NetworkError) as e:
         print(f"[WARN] Telegram error: {e}")
     except Exception as e:
@@ -69,48 +73,53 @@ def fetch_data(symbol: str, interval: str, limit: int = 100):
 
 # ── Indicators ────────────────────────────────────────
 def rsi(series: pd.Series, period: int = 14) -> pd.Series:
-    """Wilder's smoothed RSI — more accurate than simple rolling mean."""
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    # Wilder's smoothing (EWM with alpha = 1/period)
+    """Wilder's smoothed RSI."""
+    delta    = series.diff()
+    gain     = delta.clip(lower=0)
+    loss     = -delta.clip(upper=0)
     avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-    rs = avg_gain / avg_loss.replace(0, float("inf"))
+    rs       = avg_gain / avg_loss.replace(0, float("inf"))
     return 100 - (100 / (1 + rs))
 
 def bollinger_bands(series: pd.Series, period: int = 20, std_dev: float = 2):
     sma = series.rolling(period).mean()
-    std = series.rolling(period).std(ddof=0)   # population std, not sample
+    std = series.rolling(period).std(ddof=0)
     return sma + std_dev * std, sma, sma - std_dev * std
 
 def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    """Average True Range — essential for XAU/USD SL/TP sizing."""
-    high, low, close = df["high"], df["low"], df["close"].shift(1)
-    tr = pd.concat([
+    """Average True Range."""
+    high  = df["high"]
+    low   = df["low"]
+    close = df["close"].shift(1)
+    tr    = pd.concat([
         high - low,
         (high - close).abs(),
-        (low - close).abs()
+        (low  - close).abs()
     ], axis=1).max(axis=1)
     return tr.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
 
-# ── Sentiment (cached per run) ────────────────────────
+def ema(series: pd.Series, period: int) -> pd.Series:
+    """Exponential Moving Average."""
+    return series.ewm(span=period, adjust=False).mean()
+
+# ── Sentiment ─────────────────────────────────────────
 _sentiment_cache: dict = {}
 
 def analyze_sentiment(symbol: str, force: bool = False):
     """
     Runs FinBERT on latest news headlines.
-    Cached per symbol per run to avoid repeated inference.
+    Cached per symbol per run.
     Returns (positive%, negative%, neutral%, net_bias)
-    net_bias: +1 = bullish, -1 = bearish, 0 = neutral
+    net_bias: +1 bullish | -1 bearish | 0 neutral
     """
     if symbol in _sentiment_cache and not force:
         return _sentiment_cache[symbol]
 
-    query = "gold price forecast" if symbol == "XAU/USD" else symbol
+    query   = "gold price forecast" if symbol == "XAU/USD" else symbol
     rss_url = f"https://news.google.com/rss/search?q={quote(query)}"
-    feed = feedparser.parse(rss_url)
-    titles = [e.title for e in feed.entries[:15]]
+    feed    = feedparser.parse(rss_url)
+    titles  = [e.title for e in feed.entries[:15]]
 
     summary = {"Positive": 0, "Negative": 0, "Neutral": 0}
     for title in titles:
@@ -122,17 +131,11 @@ def analyze_sentiment(symbol: str, force: bool = False):
         summary[labels[probs.argmax()]] += 1
 
     total = sum(summary.values()) or 1
-    pos = summary["Positive"] / total * 100
-    neg = summary["Negative"] / total * 100
-    neu = summary["Neutral"] / total * 100
+    pos   = summary["Positive"] / total * 100
+    neg   = summary["Negative"] / total * 100
+    neu   = summary["Neutral"]  / total * 100
 
-    # Net bias: only meaningful if one side dominates
-    if pos - neg >= 20:
-        bias = 1       # clearly bullish news
-    elif neg - pos >= 20:
-        bias = -1      # clearly bearish news
-    else:
-        bias = 0       # mixed / neutral
+    bias = 1 if pos - neg >= 20 else -1 if neg - pos >= 20 else 0
 
     result = (pos, neg, neu, bias)
     _sentiment_cache[symbol] = result
