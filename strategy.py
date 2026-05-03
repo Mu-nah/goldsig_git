@@ -10,6 +10,7 @@ ATR_PERIOD     = 14
 RSI_OVERSOLD   = 30
 RSI_OVERBOUGHT = 70
 RSI_BULL_ZONE  = 48
+RSI_BUY_MAX    = 58
 MIN_BODY_RATIO = 0.25
 SL_MULTIPLIER  = 1.5
 TP_MULTIPLIER  = 2.5
@@ -24,17 +25,38 @@ def _strong_candle(candle, direction: str) -> bool:
     return (candle["close"] > candle["open"]) if direction == "BUY" \
            else (candle["close"] < candle["open"])
 
-def _away_from_swing(df_1h, direction: str, lookback: int = 20) -> bool:
+def _clean_recent(df_1h: pd.DataFrame, lookback: int = 20) -> pd.DataFrame:
     """
-    Price must be at least 2x average candle range away from swing high/low.
-    Prevents entries right at support/resistance walls.
+    Strict filtering for swing window only.
+    Filters zero lows AND flat candles (< $1 range).
+    Does NOT affect indicator calculations.
     """
-    recent    = df_1h.iloc[-lookback:]
-    price     = df_1h.iloc[-1]["close"]
-    avg_range = (recent["high"] - recent["low"]).mean()
+    recent = df_1h.iloc[-lookback:].copy()
+    return recent[
+        (recent["low"] > 100) &
+        (recent["high"] - recent["low"] >= 1.0)
+    ]
+
+def _away_from_swing(df_1h: pd.DataFrame, direction: str,
+                     lookback: int = 20) -> bool:
+    """
+    Price must be at least 2x average candle range away
+    from swing high/low. Prevents entries at support/resistance walls.
+    """
+    recent = _clean_recent(df_1h, lookback)
+    if recent.empty:
+        return False
+
+    price      = df_1h.iloc[-1]["close"]
+    atr_val    = df_1h.iloc[-1]["atr"]
+    avg_range  = (recent["high"] - recent["low"]).mean()
+    avg_range  = max(avg_range, atr_val * 1.0)
+    swing_high = recent["high"].max()
+    swing_low  = recent["low"].min()
+
     if direction == "SELL":
-        return price > recent["low"].min() + (avg_range * 2)
-    return price < recent["high"].max() - (avg_range * 2)
+        return price > swing_low + (avg_range * 2)
+    return price < swing_high - (avg_range * 2)
 
 def _daily_bias(df_1d) -> str | None:
     """
@@ -62,6 +84,9 @@ def _weekly_bias(df_1w) -> str | None:
     if df_1w is None or len(df_1w) < 20:
         return None
     df_1w = df_1w.copy()
+    df_1w = df_1w[df_1w["low"] > 100]
+    if len(df_1w) < 20:
+        return None
     df_1w["ema20"] = ema(df_1w["close"], 20)
     last = df_1w.iloc[-1]
     if pd.isna(last["ema20"]):
@@ -111,9 +136,10 @@ def generate_signal(df_1h, df_1d, df_1w=None, sentiment_bias: int = 0):
     direction   = None
     signal_type = None
 
+    # Trend continuation — RSI_BUY_MAX caps BUY at 58
     if (daily_bias == "BUY"
             and price > last1h["bb_mid"]
-            and RSI_BULL_ZONE < rsi_val < RSI_OVERBOUGHT
+            and RSI_BULL_ZONE < rsi_val < RSI_BUY_MAX
             and _strong_candle(last1h, "BUY")
             and _away_from_swing(df_1h, "BUY")):
         direction, signal_type = "BUY", "Trend"
@@ -125,6 +151,7 @@ def generate_signal(df_1h, df_1d, df_1w=None, sentiment_bias: int = 0):
             and _away_from_swing(df_1h, "SELL")):
         direction, signal_type = "SELL", "Trend"
 
+    # Mean reversion at BB extremes
     elif (daily_bias == "BUY"
             and price <= last1h["bb_lower"]
             and rsi_val <= RSI_OVERSOLD
