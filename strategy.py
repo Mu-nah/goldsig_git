@@ -1,5 +1,5 @@
 import pandas as pd
-from helpers import rsi, bollinger_bands, atr
+from helpers import rsi, bollinger_bands, atr, ema
 
 SYMBOLS        = ["XAU/USD"]
 RSI_PERIOD     = 14
@@ -32,13 +32,9 @@ def _away_from_swing(df_1h, direction: str, lookback: int = 20) -> bool:
     recent    = df_1h.iloc[-lookback:]
     price     = df_1h.iloc[-1]["close"]
     avg_range = (recent["high"] - recent["low"]).mean()
-
     if direction == "SELL":
-        swing_low = recent["low"].min()
-        return price > swing_low + (avg_range * 2)
-    else:
-        swing_high = recent["high"].max()
-        return price < swing_high - (avg_range * 2)
+        return price > recent["low"].min() + (avg_range * 2)
+    return price < recent["high"].max() - (avg_range * 2)
 
 def _daily_bias(df_1d) -> str | None:
     """
@@ -47,25 +43,32 @@ def _daily_bias(df_1d) -> str | None:
     """
     if len(df_1d) < 5:
         return None
-
     last1d = df_1d.iloc[-1]
-
     if pd.isna(last1d.get("bb_mid", float("nan"))):
         return None
-
     price_above_mid = last1d["close"] > last1d["bb_mid"]
-
-    last5 = df_1d.iloc[-5:]
-    bulls = sum(1 for _, c in last5.iterrows() if c["close"] > c["open"])
-
-    if price_above_mid and bulls >= 3:
-        return "BUY"
-    if not price_above_mid and bulls <= 2:
-        return "SELL"
-
+    bulls = sum(1 for _, c in df_1d.iloc[-5:].iterrows()
+                if c["close"] > c["open"])
+    if price_above_mid and bulls >= 3: return "BUY"
+    if not price_above_mid and bulls <= 2: return "SELL"
     return None
 
-def generate_signal(df_1h, df_1d, sentiment_bias: int = 0):
+def _weekly_bias(df_1w) -> str | None:
+    """
+    Weekly EMA20 structure filter.
+    Price above weekly EMA20 = bullish, below = bearish.
+    When weekly conflicts with daily — no trade.
+    """
+    if df_1w is None or len(df_1w) < 20:
+        return None
+    df_1w = df_1w.copy()
+    df_1w["ema20"] = ema(df_1w["close"], 20)
+    last = df_1w.iloc[-1]
+    if pd.isna(last["ema20"]):
+        return None
+    return "BUY" if last["close"] > last["ema20"] else "SELL"
+
+def generate_signal(df_1h, df_1d, df_1w=None, sentiment_bias: int = 0):
     """
     sentiment_bias: +1 bullish | -1 bearish | 0 neutral
     Returns (direction, last1h, signal_type, sl, tp)
@@ -89,11 +92,17 @@ def generate_signal(df_1h, df_1d, sentiment_bias: int = 0):
     if pd.isna(rsi_val) or pd.isna(atr_val) or atr_val == 0:
         return None, last1h, None, None, None
 
-    # ── Filters ─────────────────────────────────────
+    # ── Daily bias ──────────────────────────────────
     daily_bias = _daily_bias(df_1d)
     if daily_bias is None:
         return None, last1h, None, None, None
 
+    # ── Weekly bias — must align with daily ─────────
+    weekly_bias = _weekly_bias(df_1w)
+    if weekly_bias and weekly_bias != daily_bias:
+        return None, last1h, None, None, None
+
+    # ── Daily BB structure ───────────────────────────
     inside_daily_bb = last1d["bb_lower"] < last1d["close"] < last1d["bb_upper"]
     if not inside_daily_bb:
         return None, last1h, None, None, None
@@ -102,7 +111,6 @@ def generate_signal(df_1h, df_1d, sentiment_bias: int = 0):
     direction   = None
     signal_type = None
 
-    # Trend continuation
     if (daily_bias == "BUY"
             and price > last1h["bb_mid"]
             and RSI_BULL_ZONE < rsi_val < RSI_OVERBOUGHT
@@ -117,7 +125,6 @@ def generate_signal(df_1h, df_1d, sentiment_bias: int = 0):
             and _away_from_swing(df_1h, "SELL")):
         direction, signal_type = "SELL", "Trend"
 
-    # Mean reversion at BB extremes
     elif (daily_bias == "BUY"
             and price <= last1h["bb_lower"]
             and rsi_val <= RSI_OVERSOLD
