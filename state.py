@@ -16,18 +16,17 @@ if not creds_json:
 creds = Credentials.from_service_account_info(
     json.loads(creds_json), scopes=SCOPE
 )
-gc = gspread.authorize(creds)
+gc    = gspread.authorize(creds)
 sheet = gc.open(SHEET_NAME).sheet1
 
-# ── In-memory cache — load once per run ──────────────
-_cache: dict = {}
+_cache:  dict = {}
 _loaded: bool = False
 
 def _load():
     global _cache, _loaded
     if not _loaded:
         records = sheet.get_all_records()
-        _cache = {r["symbol"]: r["last_signal"] for r in records}
+        _cache  = {r["symbol"]: r["last_signal"] for r in records}
         _loaded = True
 
 def get_last_signal(symbol: str) -> str | None:
@@ -37,11 +36,8 @@ def get_last_signal(symbol: str) -> str | None:
 def set_last_signal(symbol: str, signal: str):
     _load()
     if _cache.get(symbol) == signal:
-        return   # no change, skip write
-
+        return
     _cache[symbol] = signal
-
-    # Find and update existing row, or append
     records = sheet.get_all_records()
     for i, row in enumerate(records, start=2):
         if row.get("symbol") == symbol:
