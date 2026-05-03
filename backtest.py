@@ -61,7 +61,6 @@ def daily_bias(df_1d: pd.DataFrame, idx: int) -> str | None:
     return None
 
 def weekly_bias_at(df_1w: pd.DataFrame, w_idx: int) -> str | None:
-    """Weekly EMA20 structure at bar w_idx."""
     if df_1w is None or w_idx < 19:
         return None
     window = df_1w.iloc[: w_idx + 1].copy()
@@ -85,7 +84,8 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 # ──────────────────────────────
 def scan_signal(df_1h: pd.DataFrame, i: int,
                 df_1d: pd.DataFrame, d_idx: int,
-                df_1w: pd.DataFrame = None, w_idx: int = 0):
+                df_1w: pd.DataFrame = None, w_idx: int = 0,
+                debug: bool = False):
     if i < 1:
         return None, None, None, None
 
@@ -103,7 +103,6 @@ def scan_signal(df_1h: pd.DataFrame, i: int,
     if bias is None:
         return None, None, None, None
 
-    # Weekly alignment
     w_bias = weekly_bias_at(df_1w, w_idx)
     if w_bias and w_bias != bias:
         return None, None, None, None
@@ -111,6 +110,14 @@ def scan_signal(df_1h: pd.DataFrame, i: int,
     inside_daily_bb = last1d["bb_lower"] < last1d["close"] < last1d["bb_upper"]
     if not inside_daily_bb:
         return None, None, None, None
+
+    # ── Swing debug values ───────────────────────────
+    start      = max(0, i - 20)
+    recent     = df_1h.iloc[start: i + 1]
+    avg_range  = (recent["high"] - recent["low"]).mean()
+    swing_high = recent["high"].max()
+    swing_low  = recent["low"].min()
+    needed     = avg_range * 2
 
     direction = None
     sig_type  = None
@@ -140,6 +147,20 @@ def scan_signal(df_1h: pd.DataFrame, i: int,
             and rsi_val >= RSI_OVERBOUGHT
             and strong_candle(last1h, "SELL")):
         direction, sig_type = "SELL", "Reversal"
+
+    if direction and debug:
+        bar_time = df_1h.iloc[i]["datetime"] \
+                   if "datetime" in df_1h.columns else i
+        print(
+            f"[SIGNAL] {direction} {sig_type} | "
+            f"Time: {bar_time} | "
+            f"Price: {price:.2f} | RSI: {rsi_val:.1f} | "
+            f"DailyBias: {bias} | WeeklyBias: {w_bias} | "
+            f"SwingHigh: {swing_high:.2f} | SwingLow: {swing_low:.2f} | "
+            f"GapToHigh: {swing_high - price:.2f} | "
+            f"GapToLow: {price - swing_low:.2f} | "
+            f"Needed: {needed:.2f}"
+        )
 
     if not direction:
         return None, None, None, None
@@ -223,10 +244,11 @@ def simulate_trades(df_1h: pd.DataFrame,
 
         # ── Look for new signal ───────────────────────
         direction, sig_type, sl, tp = scan_signal(
-            df_1h, i, df_1d, d_idx, df_1w_copy, w_idx
+            df_1h, i, df_1d, d_idx, df_1w_copy, w_idx, debug=True
         )
 
         if direction and i < cooldown.get(direction, 0):
+            print(f"[COOLDOWN] {direction} blocked at bar {i}")
             continue
 
         if direction:
@@ -240,6 +262,7 @@ def simulate_trades(df_1h: pd.DataFrame,
                 "entry_time": bar["datetime"],
             }
 
+    # Mark any still-open trade
     if trade:
         trade.update({
             "exit": None, "exit_time": None,
