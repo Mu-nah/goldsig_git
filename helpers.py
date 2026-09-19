@@ -1,6 +1,7 @@
 import os
 import asyncio
 import warnings
+from datetime import datetime, timezone, timedelta
 import requests
 import pandas as pd
 import feedparser
@@ -52,6 +53,34 @@ def send_alert(msg: str):
         loop.close()
 
 # ── Market Data ───────────────────────────────────────
+_INTERVAL_DURATIONS = {
+    "1min": timedelta(minutes=1),
+    "5min": timedelta(minutes=5),
+    "15min": timedelta(minutes=15),
+    "30min": timedelta(minutes=30),
+    "45min": timedelta(minutes=45),
+    "1h": timedelta(hours=1),
+    "2h": timedelta(hours=2),
+    "4h": timedelta(hours=4),
+    "1day": timedelta(days=1),
+    "1week": timedelta(days=7),
+}
+
+def _drop_incomplete_candle(df: pd.DataFrame, interval: str) -> pd.DataFrame:
+    """
+    Twelve Data's most recent intraday bar is often still forming (its
+    OHLC keeps changing until the interval actually closes). Signals must
+    only be computed from confirmed, closed candles, or they can fire on
+    conditions that stop being true minutes later.
+    """
+    duration = _INTERVAL_DURATIONS.get(interval)
+    if duration is None or df.empty:
+        return df
+    last_open = df.iloc[-1]["datetime"]
+    if last_open + duration > datetime.now(timezone.utc):
+        df = df.iloc[:-1].reset_index(drop=True)
+    return df
+
 def fetch_data(symbol: str, interval: str, limit: int = 100):
     base_url = "https://api.twelvedata.com/time_series"
     for key in API_KEYS:
@@ -69,6 +98,7 @@ def fetch_data(symbol: str, interval: str, limit: int = 100):
                     df = df.sort_values("datetime").reset_index(drop=True)
                     df = df.astype({"open": float, "high": float,
                                     "low": float, "close": float})
+                    df = _drop_incomplete_candle(df, interval)
                     return df
         except Exception:
             continue
