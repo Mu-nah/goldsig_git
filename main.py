@@ -54,7 +54,7 @@ def main():
         # ── DAILY MODE ──────────────────────────────
         elif run_mode == "daily":
             sl_str    = f" | SL: {sl} TP: {tp}" if signal else ""
-            score_str = f" | Score: {score}/100 ({grade})" if signal else ""
+            score_str = f" | Score: {score}/100 ({grade})" if score is not None else ""
             msg = (
                 f"⏰ <b>{symbol} — Daily Briefing</b>\n"
                 f"Signal : {signal if signal else 'No clear signal'}"
