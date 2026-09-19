@@ -21,7 +21,7 @@ def main():
 
         pos, neg, neu, bias = analyze_sentiment(symbol)
 
-        signal, last1h, sig_type, sl, tp = generate_signal(
+        signal, last1h, sig_type, sl, tp, score, grade = generate_signal(
             df_1h, df_1d, df_1w, bias
         )
         current_signal = f"{signal}_{sig_type}" if signal and sig_type else None
@@ -40,6 +40,7 @@ def main():
             msg = (
                 f"📊 <b>{symbol} Signal Alert</b>\n"
                 f"Signal : {signal} ({sig_type})\n"
+                f"Score  : {score}/100 ({grade})\n"
                 f"Close  : {last1h['close']:.4f}\n"
                 f"RSI    : {last1h['rsi']:.2f}\n"
                 f"SL     : {sl} | TP: {tp}\n"
@@ -52,11 +53,12 @@ def main():
 
         # ── DAILY MODE ──────────────────────────────
         elif run_mode == "daily":
-            sl_str = f" | SL: {sl} TP: {tp}" if signal else ""
+            sl_str    = f" | SL: {sl} TP: {tp}" if signal else ""
+            score_str = f" | Score: {score}/100 ({grade})" if signal else ""
             msg = (
                 f"⏰ <b>{symbol} — Daily Briefing</b>\n"
                 f"Signal : {signal if signal else 'No clear signal'}"
-                + (f" ({sig_type})" if sig_type else "") + sl_str + "\n"
+                + (f" ({sig_type})" if sig_type else "") + sl_str + score_str + "\n"
                 f"Close  : {last1h['close']:.4f}\n"
                 f"RSI    : {last1h['rsi']:.2f}\n"
                 f"News   : 🟢 {pos:.1f}% | 🔴 {neg:.1f}% | ⚪ {neu:.1f}%\n"

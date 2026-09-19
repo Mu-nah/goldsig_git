@@ -106,6 +106,24 @@ def ema(series: pd.Series, period: int) -> pd.Series:
     """Exponential Moving Average."""
     return series.ewm(span=period, adjust=False).mean()
 
+def adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """Wilder's ADX — trend strength, 0-100 (independent of direction)."""
+    high, low = df["high"], df["low"]
+    up_move   = high.diff()
+    down_move = -low.diff()
+
+    plus_dm  = pd.Series(0.0, index=df.index)
+    minus_dm = pd.Series(0.0, index=df.index)
+    plus_dm[(up_move > down_move) & (up_move > 0)]     = up_move
+    minus_dm[(down_move > up_move) & (down_move > 0)]  = down_move
+
+    atr_val  = atr(df, period)
+    plus_di  = 100 * plus_dm.ewm(alpha=1/period, min_periods=period, adjust=False).mean() / atr_val
+    minus_di = 100 * minus_dm.ewm(alpha=1/period, min_periods=period, adjust=False).mean() / atr_val
+
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, float("inf"))
+    return dx.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+
 # ── Sentiment ─────────────────────────────────────────
 _sentiment_cache: dict = {}
 

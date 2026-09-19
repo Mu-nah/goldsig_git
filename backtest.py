@@ -1,6 +1,6 @@
 import pandas as pd
 from datetime import datetime, timezone, timedelta
-from helpers import fetch_data, send_alert, rsi, bollinger_bands, atr
+from helpers import fetch_data, send_alert, rsi, bollinger_bands, atr, adx
 
 # ──────────────────────────────
 # CONFIG
@@ -15,6 +15,7 @@ RSI_PERIOD     = 14
 BB_PERIOD      = 20
 BB_STDDEV      = 2
 ATR_PERIOD     = 14
+ADX_PERIOD     = 14
 SL_MULTIPLIER  = 1.5
 TP_MULTIPLIER  = 2.5
 
@@ -23,6 +24,24 @@ RSI_OVERBOUGHT = 70
 RSI_BULL_ZONE  = 48
 RSI_BUY_MAX    = 58
 MIN_BODY_RATIO = 0.25
+
+# ── Confluence scoring (mirrors strategy.py) ─────
+W_RSI_QUALITY = 25
+W_CANDLE      = 20
+W_WEEKLY_BIAS = 15
+W_SWING_ROOM  = 20
+W_ADX         = 15
+W_SESSION     = 5
+MIN_SCORE     = 55
+
+def grade(score: float) -> str:
+    if score >= 85: return "A+"
+    if score >= 70: return "A"
+    if score >= MIN_SCORE: return "B"
+    return "C"
+
+def _clip01(x: float) -> float:
+    return max(0.0, min(1.0, x))
 
 # ──────────────────────────────
 # HELPERS
@@ -116,7 +135,71 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         df["close"], BB_PERIOD, BB_STDDEV
     )
     df["atr"] = atr(df, ATR_PERIOD)
+    df["adx"] = adx(df, ADX_PERIOD)
     return df
+
+# ──────────────────────────────
+# CONFLUENCE SCORE COMPONENTS
+# ──────────────────────────────
+def _rsi_quality(rsi_val: float, kind: str, direction: str) -> float:
+    if kind == "Trend":
+        low, high = (RSI_BULL_ZONE, RSI_BUY_MAX) if direction == "BUY" \
+                    else (RSI_OVERSOLD, RSI_BULL_ZONE)
+        center, half = (low + high) / 2, (high - low) / 2
+        return _clip01(1 - abs(rsi_val - center) / half) if half else 0.5
+    if direction == "BUY":
+        return _clip01((RSI_OVERSOLD - rsi_val) / 15)
+    return _clip01((rsi_val - RSI_OVERBOUGHT) / 15)
+
+def _candle_quality(candle) -> float:
+    ratio = body_ratio(candle)
+    return _clip01((ratio - MIN_BODY_RATIO) / (0.6 - MIN_BODY_RATIO))
+
+def _weekly_quality(w_bias: str | None, bias: str) -> float:
+    if w_bias is None:
+        return 0.5
+    return 1.0 if w_bias == bias else 0.0
+
+def _swing_quality(df_1h: pd.DataFrame, i: int, direction: str, lookback: int = 20) -> float:
+    recent = clean_recent(df_1h, i, lookback)
+    if recent.empty:
+        return 0.0
+    price     = df_1h.iloc[i]["close"]
+    atr_val   = df_1h.iloc[i]["atr"]
+    avg_range = max((recent["high"] - recent["low"]).mean(), atr_val)
+    if avg_range == 0:
+        return 0.0
+    if direction == "SELL":
+        multiple = (price - recent["low"].min()) / avg_range
+    else:
+        multiple = (recent["high"].max() - price) / avg_range
+    return _clip01((multiple - 2) / 2)
+
+def _adx_quality(adx_val: float, kind: str) -> float:
+    if pd.isna(adx_val):
+        return 0.5
+    if kind == "Trend":
+        return _clip01((adx_val - 15) / 15)
+    return _clip01((30 - adx_val) / 15)
+
+def _session_quality(dt) -> float:
+    hour = dt.hour
+    if 7 <= hour < 16:  return 1.0
+    if 16 <= hour < 21: return 0.6
+    return 0.2
+
+def confluence_score(df_1h, i: int, direction: str, kind: str,
+                      rsi_val: float, w_bias, bias, adx_val) -> float:
+    candle = df_1h.iloc[i]
+    total = (
+        _rsi_quality(rsi_val, kind, direction) * W_RSI_QUALITY +
+        _candle_quality(candle) * W_CANDLE +
+        _weekly_quality(w_bias, bias) * W_WEEKLY_BIAS +
+        (_swing_quality(df_1h, i, direction) if kind == "Trend" else 1.0) * W_SWING_ROOM +
+        _adx_quality(adx_val, kind) * W_ADX +
+        _session_quality(candle["datetime"]) * W_SESSION
+    )
+    return round(total, 1)
 
 # ──────────────────────────────
 # SIGNAL SCANNER
@@ -126,7 +209,7 @@ def scan_signal(df_1h: pd.DataFrame, i: int,
                 df_1w: pd.DataFrame = None, w_idx: int = 0,
                 debug: bool = False):
     if i < 1:
-        return None, None, None, None
+        return None, None, None, None, None
 
     last1h = df_1h.iloc[i]
     last1d = df_1d.iloc[d_idx]
@@ -134,21 +217,22 @@ def scan_signal(df_1h: pd.DataFrame, i: int,
     rsi_val = last1h["rsi"]
     price   = last1h["close"]
     atr_val = last1h["atr"]
+    adx_val = last1h["adx"]
 
     if pd.isna(rsi_val) or pd.isna(atr_val) or atr_val == 0:
-        return None, None, None, None
+        return None, None, None, None, None
 
     bias = daily_bias(df_1d, d_idx)
     if bias is None:
-        return None, None, None, None
+        return None, None, None, None, None
 
     w_bias = weekly_bias_at(df_1w, w_idx)
     if w_bias and w_bias != bias:
-        return None, None, None, None
+        return None, None, None, None, None
 
     inside_daily_bb = last1d["bb_lower"] < last1d["close"] < last1d["bb_upper"]
     if not inside_daily_bb:
-        return None, None, None, None
+        return None, None, None, None, None
 
     direction = None
     sig_type  = None
@@ -179,6 +263,9 @@ def scan_signal(df_1h: pd.DataFrame, i: int,
             and strong_candle(last1h, "SELL")):
         direction, sig_type = "SELL", "Reversal"
 
+    score = confluence_score(df_1h, i, direction, sig_type, rsi_val,
+                              w_bias, bias, adx_val) if direction else None
+
     if debug:
         recent_dbg = clean_recent(df_1h, i)
         avg_range  = (recent_dbg["high"] - recent_dbg["low"]).mean() \
@@ -200,18 +287,19 @@ def scan_signal(df_1h: pd.DataFrame, i: int,
             f"SwingHigh: {swing_high:.2f} | SwingLow: {swing_low:.2f} | "
             f"GapToHigh: {swing_high - price:.2f} | "
             f"GapToLow: {price - swing_low:.2f} | "
-            f"Needed: {needed:.2f} | SwingOK: {swing_ok}"
+            f"Needed: {needed:.2f} | SwingOK: {swing_ok} | "
+            f"Score: {score if score is not None else '-'}"
         )
 
-    if not direction:
-        return None, None, None, None
+    if not direction or score < MIN_SCORE:
+        return None, None, None, None, None
 
     sl = round(price - atr_val * SL_MULTIPLIER, 2) if direction == "BUY" \
          else round(price + atr_val * SL_MULTIPLIER, 2)
     tp = round(price + atr_val * TP_MULTIPLIER, 2) if direction == "BUY" \
          else round(price - atr_val * TP_MULTIPLIER, 2)
 
-    return direction, sig_type, sl, tp
+    return direction, sig_type, sl, tp, score
 
 # ──────────────────────────────
 # TRADE SIMULATOR
@@ -290,7 +378,7 @@ def simulate_trades(df_1h: pd.DataFrame,
                 trade = None
             continue
 
-        direction, sig_type, sl, tp = scan_signal(
+        direction, sig_type, sl, tp, score = scan_signal(
             df_1h, i, df_1d, d_idx, df_1w_copy, w_idx, debug=True
         )
 
@@ -306,6 +394,8 @@ def simulate_trades(df_1h: pd.DataFrame,
                 "symbol":     "XAU/USD",
                 "direction":  direction,
                 "type":       sig_type,
+                "score":      score,
+                "grade":      grade(score),
                 "entry":      bar["close"],
                 "sl":         sl,
                 "tp":         tp,
@@ -358,6 +448,14 @@ def calc_stats(trades: list[dict], initial_equity: float) -> dict:
 
     final_equity = closed[-1]["equity"]
 
+    avg_score = sum(t.get("score", 0) for t in closed) / len(closed)
+    high_grade  = [t for t in closed if t.get("grade") in ("A+", "A")]
+    low_grade   = [t for t in closed if t.get("grade") == "B"]
+    high_wr = len([t for t in high_grade if t["result"] == "TP"]) / len(high_grade) * 100 \
+              if high_grade else 0
+    low_wr  = len([t for t in low_grade  if t["result"] == "TP"]) / len(low_grade)  * 100 \
+              if low_grade else 0
+
     return {
         "total_trades":  len(closed),
         "wins":          len(wins),
@@ -373,6 +471,11 @@ def calc_stats(trades: list[dict], initial_equity: float) -> dict:
         "trend_wr":      round(trend_wr, 1),
         "reversal_wr":   round(reversal_wr, 1),
         "open_trades":   len([t for t in trades if t["result"] == "OPEN"]),
+        "avg_score":     round(avg_score, 1),
+        "high_grade_n":  len(high_grade),
+        "high_grade_wr": round(high_wr, 1),
+        "low_grade_n":   len(low_grade),
+        "low_grade_wr":  round(low_wr, 1),
     }
 
 # ──────────────────────────────
@@ -403,7 +506,7 @@ def build_report(stats: dict, trades: list[dict], symbol: str) -> str:
         ts   = t["entry_time"].strftime("%m-%d %H:%M") \
                if hasattr(t["entry_time"], "strftime") else str(t["entry_time"])
         trade_log += (
-            f"{icon} {t['direction']} {t['type']} | "
+            f"{icon} {t['direction']} {t['type']} [{t.get('grade', '-')}] | "
             f"Entry {t['entry']:.2f} → {t['result']} "
             f"${t['pnl_dollar']:+.0f} [{ts}]\n"
         )
@@ -428,6 +531,10 @@ def build_report(stats: dict, trades: list[dict], symbol: str) -> str:
         f"Trend WR       : {stats['trend_wr']}%\n"
         f"Reversal WR    : {stats['reversal_wr']}%\n"
         f"Open Trades    : {stats['open_trades']}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Avg Score      : {stats['avg_score']}/100\n"
+        f"A/A+ WR        : {stats['high_grade_wr']}% (n={stats['high_grade_n']})\n"
+        f"B WR           : {stats['low_grade_wr']}% (n={stats['low_grade_n']})\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"<b>Last 5 Trades</b>\n{trade_log}"
         f"━━━━━━━━━━━━━━━━━━━━━\n"

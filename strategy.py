@@ -1,11 +1,12 @@
 import pandas as pd
-from helpers import rsi, bollinger_bands, atr, ema
+from helpers import rsi, bollinger_bands, atr, ema, adx
 
 SYMBOLS        = ["XAU/USD"]
 RSI_PERIOD     = 14
 BB_PERIOD      = 20
 BB_STDDEV      = 2
 ATR_PERIOD     = 14
+ADX_PERIOD     = 14
 
 RSI_OVERSOLD   = 30
 RSI_OVERBOUGHT = 70
@@ -14,6 +15,91 @@ RSI_BUY_MAX    = 58
 MIN_BODY_RATIO = 0.25
 SL_MULTIPLIER  = 1.5
 TP_MULTIPLIER  = 2.5
+
+# ── Confluence scoring ──────────────────────────────
+# Trigger conditions above decide WHETHER a setup exists at all.
+# These weights grade HOW GOOD a qualifying setup is, 0-100.
+W_RSI_QUALITY   = 25   # how close RSI sits to the ideal point in its zone
+W_CANDLE        = 20   # candle body strength beyond the minimum
+W_WEEKLY_BIAS   = 15   # weekly EMA20 agreement with daily bias
+W_SWING_ROOM    = 20   # distance past the swing-wall minimum (Trend only)
+W_ADX           = 15   # trend strength (favors Trend setups, penalizes Reversal setups)
+W_SESSION       = 5    # London/NY active-hours bonus
+
+MIN_SCORE = 55   # below this, a technically-qualifying setup is discarded as low quality
+
+def _grade(score: float) -> str:
+    if score >= 85: return "A+"
+    if score >= 70: return "A"
+    if score >= MIN_SCORE: return "B"
+    return "C"
+
+def _clip01(x: float) -> float:
+    return max(0.0, min(1.0, x))
+
+def _rsi_quality(rsi_val: float, kind: str, direction: str) -> float:
+    if kind == "Trend":
+        low, high = (RSI_BULL_ZONE, RSI_BUY_MAX) if direction == "BUY" \
+                    else (RSI_OVERSOLD, RSI_BULL_ZONE)
+        center, half = (low + high) / 2, (high - low) / 2
+        return _clip01(1 - abs(rsi_val - center) / half) if half else 0.5
+    # Reversal — deeper into overbought/oversold extreme = higher quality
+    if direction == "BUY":
+        return _clip01((RSI_OVERSOLD - rsi_val) / 15)
+    return _clip01((rsi_val - RSI_OVERBOUGHT) / 15)
+
+def _candle_quality(candle) -> float:
+    ratio = _body_ratio(candle)
+    return _clip01((ratio - MIN_BODY_RATIO) / (0.6 - MIN_BODY_RATIO))
+
+def _weekly_quality(weekly_bias: str | None, daily_bias: str) -> float:
+    if weekly_bias is None:
+        return 0.5   # no data — neutral, neither rewarded nor punished
+    return 1.0 if weekly_bias == daily_bias else 0.0
+
+def _swing_quality(df_1h: pd.DataFrame, direction: str, lookback: int = 20) -> float:
+    recent = _clean_recent(df_1h, lookback)
+    if recent.empty:
+        return 0.0
+    price      = df_1h.iloc[-1]["close"]
+    atr_val    = df_1h.iloc[-1]["atr"]
+    avg_range  = max((recent["high"] - recent["low"]).mean(), atr_val)
+    if avg_range == 0:
+        return 0.0
+    if direction == "SELL":
+        multiple = (price - recent["low"].min()) / avg_range
+    else:
+        multiple = (recent["high"].max() - price) / avg_range
+    return _clip01((multiple - 2) / 2)   # 2x = minimum required (0 quality), 4x+ = full quality
+
+def _adx_quality(adx_val: float, kind: str) -> float:
+    if pd.isna(adx_val):
+        return 0.5
+    if kind == "Trend":
+        return _clip01((adx_val - 15) / 15)     # trending market rewarded
+    return _clip01((30 - adx_val) / 15)          # ranging market rewarded for reversals
+
+def _session_quality(dt) -> float:
+    hour = dt.hour
+    if 7 <= hour < 16:   # London + London/NY overlap — best gold liquidity
+        return 1.0
+    if 16 <= hour < 21:  # NY afternoon
+        return 0.6
+    return 0.2           # Asian / off-hours — thinner, choppier
+
+def _confluence_score(df_1h, direction: str, kind: str,
+                       rsi_val: float, weekly_bias: str | None,
+                       daily_bias: str, adx_val: float) -> tuple[float, dict]:
+    candle = df_1h.iloc[-1]
+    parts = {
+        "rsi_quality": _rsi_quality(rsi_val, kind, direction) * W_RSI_QUALITY,
+        "candle":      _candle_quality(candle) * W_CANDLE,
+        "weekly_bias": _weekly_quality(weekly_bias, daily_bias) * W_WEEKLY_BIAS,
+        "swing_room":  (_swing_quality(df_1h, direction) if kind == "Trend" else 1.0) * W_SWING_ROOM,
+        "adx":         _adx_quality(adx_val, kind) * W_ADX,
+        "session":     _session_quality(candle["datetime"]) * W_SESSION,
+    }
+    return round(sum(parts.values()), 1), parts
 
 def _body_ratio(candle) -> float:
     total = candle["high"] - candle["low"]
@@ -96,13 +182,14 @@ def _weekly_bias(df_1w) -> str | None:
 def generate_signal(df_1h, df_1d, df_1w=None, sentiment_bias: int = 0):
     """
     sentiment_bias: +1 bullish | -1 bearish | 0 neutral
-    Returns (direction, last1h, signal_type, sl, tp)
+    Returns (direction, last1h, signal_type, sl, tp, score, grade)
     """
     # ── Indicators ──────────────────────────────────
     df_1h["rsi"] = rsi(df_1h["close"], RSI_PERIOD)
     df_1h["bb_upper"], df_1h["bb_mid"], df_1h["bb_lower"] = \
         bollinger_bands(df_1h["close"], BB_PERIOD, BB_STDDEV)
     df_1h["atr"] = atr(df_1h, ATR_PERIOD)
+    df_1h["adx"] = adx(df_1h, ADX_PERIOD)
 
     df_1d["bb_upper"], df_1d["bb_mid"], df_1d["bb_lower"] = \
         bollinger_bands(df_1d["close"], BB_PERIOD, BB_STDDEV)
@@ -115,22 +202,22 @@ def generate_signal(df_1h, df_1d, df_1w=None, sentiment_bias: int = 0):
     atr_val = last1h["atr"]
 
     if pd.isna(rsi_val) or pd.isna(atr_val) or atr_val == 0:
-        return None, last1h, None, None, None
+        return None, last1h, None, None, None, None, None
 
     # ── Daily bias ──────────────────────────────────
     daily_bias = _daily_bias(df_1d)
     if daily_bias is None:
-        return None, last1h, None, None, None
+        return None, last1h, None, None, None, None, None
 
     # ── Weekly bias — must align with daily ─────────
     weekly_bias = _weekly_bias(df_1w)
     if weekly_bias and weekly_bias != daily_bias:
-        return None, last1h, None, None, None
+        return None, last1h, None, None, None, None, None
 
     # ── Daily BB structure ───────────────────────────
     inside_daily_bb = last1d["bb_lower"] < last1d["close"] < last1d["bb_upper"]
     if not inside_daily_bb:
-        return None, last1h, None, None, None
+        return None, last1h, None, None, None, None, None
 
     # ── Signal Detection ────────────────────────────
     direction   = None
@@ -165,13 +252,21 @@ def generate_signal(df_1h, df_1d, df_1w=None, sentiment_bias: int = 0):
         direction, signal_type = "SELL", "Reversal"
 
     if not direction:
-        return None, last1h, None, None, None
+        return None, last1h, None, None, None, None, None
 
     # ── Sentiment Gate ──────────────────────────────
     if sentiment_bias == 1  and direction == "SELL":
-        return None, last1h, None, None, None
+        return None, last1h, None, None, None, None, None
     if sentiment_bias == -1 and direction == "BUY":
-        return None, last1h, None, None, None
+        return None, last1h, None, None, None, None, None
+
+    # ── Confluence Score ─────────────────────────────
+    score, _breakdown = _confluence_score(
+        df_1h, direction, signal_type, rsi_val, weekly_bias,
+        daily_bias, last1h["adx"]
+    )
+    if score < MIN_SCORE:
+        return None, last1h, None, None, None, score, _grade(score)
 
     # ── SL / TP ─────────────────────────────────────
     if direction == "BUY":
@@ -181,4 +276,4 @@ def generate_signal(df_1h, df_1d, df_1w=None, sentiment_bias: int = 0):
         sl = round(price + atr_val * SL_MULTIPLIER, 2)
         tp = round(price - atr_val * TP_MULTIPLIER, 2)
 
-    return direction, last1h, signal_type, sl, tp
+    return direction, last1h, signal_type, sl, tp, score, _grade(score)
