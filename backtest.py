@@ -610,7 +610,9 @@ def main():
 
     for symbol in SYMBOLS:
         print(f"[INFO] Fetching data for {symbol}...")
-        df_1h = fetch_data(symbol, "1h",    500)
+        # 1h bars must cover the full LOOKBACK_DAYS window, plus warmup for
+        # indicators (ATR/RSI/ADX/EMA20) that need history before the cutoff.
+        df_1h = fetch_data(symbol, "1h",    LOOKBACK_DAYS * 24 + 100)
         df_1d = fetch_data(symbol, "1day",  120)
         df_1w = fetch_data(symbol, "1week", 30)
 
