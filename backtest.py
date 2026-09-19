@@ -1,6 +1,6 @@
 import pandas as pd
 from datetime import datetime, timezone, timedelta
-from helpers import fetch_data, send_alert, rsi, bollinger_bands, atr, adx
+from helpers import fetch_data, send_alert, rsi, bollinger_bands, atr, adx, ema
 
 # ──────────────────────────────
 # CONFIG
@@ -10,12 +10,14 @@ INITIAL_EQUITY = 10_000
 RISK_PER_TRADE = 0.01
 LOOKBACK_DAYS  = 60
 WAT            = timezone(timedelta(hours=1))
+SPREAD_USD     = 0.35   # typical XAU/USD retail round-trip spread, in price units — adjust to your broker
 
 RSI_PERIOD     = 14
 BB_PERIOD      = 20
 BB_STDDEV      = 2
 ATR_PERIOD     = 14
 ADX_PERIOD     = 14
+EMA_TREND_PERIOD = 20
 SL_MULTIPLIER  = 1.5
 TP_MULTIPLIER  = 2.5
 
@@ -25,14 +27,17 @@ RSI_BULL_ZONE  = 48
 RSI_BUY_MAX    = 58
 MIN_BODY_RATIO = 0.25
 
-# ── Confluence scoring (mirrors strategy.py) ─────
-W_RSI_QUALITY = 25
-W_CANDLE      = 20
-W_WEEKLY_BIAS = 15
-W_SWING_ROOM  = 20
-W_ADX         = 15
-W_SESSION     = 5
-MIN_SCORE     = 55
+# ── Confluence scoring (mirrors strategy.py) — weights sum to 100 ─────
+W_RSI_QUALITY   = 18
+W_CANDLE        = 12
+W_WEEKLY_BIAS   = 10
+W_SWING_ROOM    = 15
+W_ADX           = 10
+W_SESSION       = 5
+W_RSI_MOMENTUM  = 10
+W_VOLATILITY    = 10
+W_EMA_EXTENSION = 10
+MIN_SCORE       = 55
 
 def grade(score: float) -> str:
     if score >= 85: return "A+"
@@ -136,6 +141,7 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     )
     df["atr"] = atr(df, ATR_PERIOD)
     df["adx"] = adx(df, ADX_PERIOD)
+    df["ema20"] = ema(df["close"], EMA_TREND_PERIOD)
     return df
 
 # ──────────────────────────────
@@ -188,6 +194,47 @@ def _session_quality(dt) -> float:
     if 16 <= hour < 21: return 0.6
     return 0.2
 
+def _rsi_momentum_quality(df_1h: pd.DataFrame, i: int, direction: str, lookback: int = 3) -> float:
+    if i < lookback:
+        return 0.5
+    rsi_now  = df_1h.iloc[i]["rsi"]
+    rsi_prev = df_1h.iloc[i - lookback]["rsi"]
+    if pd.isna(rsi_now) or pd.isna(rsi_prev):
+        return 0.5
+    slope = rsi_now - rsi_prev
+    directional_slope = slope if direction == "BUY" else -slope
+    return _clip01(0.5 + directional_slope / 20)
+
+def _volatility_quality(df_1h: pd.DataFrame, i: int, lookback: int = 50) -> float:
+    if i < lookback:
+        return 0.5
+    atr_now  = df_1h.iloc[i]["atr"]
+    atr_hist = df_1h["atr"].iloc[i - lookback: i]
+    atr_avg  = atr_hist.mean()
+    if pd.isna(atr_now) or pd.isna(atr_avg) or atr_avg == 0:
+        return 0.5
+    ratio = atr_now / atr_avg
+    if ratio < 0.7:
+        return _clip01(ratio / 0.7 * 0.5)
+    if ratio <= 1.5:
+        return 1.0
+    return _clip01(1 - (ratio - 1.5))
+
+def _ema_extension_quality(df_1h: pd.DataFrame, i: int, direction: str) -> float:
+    last    = df_1h.iloc[i]
+    ema20   = last.get("ema20", float("nan"))
+    atr_val = last["atr"]
+    if pd.isna(ema20) or pd.isna(atr_val) or atr_val == 0:
+        return 0.5
+    price    = last["close"]
+    distance = (price - ema20) if direction == "BUY" else (ema20 - price)
+    atr_multiple = distance / atr_val
+    if atr_multiple < 0:
+        return 0.3
+    if atr_multiple <= 1.5:
+        return _clip01(0.3 + (atr_multiple / 1.5) * 0.7)
+    return _clip01(1.0 - (atr_multiple - 1.5) / 2.5 * 0.8)
+
 def confluence_score(df_1h, i: int, direction: str, kind: str,
                       rsi_val: float, w_bias, bias, adx_val) -> float:
     candle = df_1h.iloc[i]
@@ -197,7 +244,10 @@ def confluence_score(df_1h, i: int, direction: str, kind: str,
         _weekly_quality(w_bias, bias) * W_WEEKLY_BIAS +
         (_swing_quality(df_1h, i, direction) if kind == "Trend" else 1.0) * W_SWING_ROOM +
         _adx_quality(adx_val, kind) * W_ADX +
-        _session_quality(candle["datetime"]) * W_SESSION
+        _session_quality(candle["datetime"]) * W_SESSION +
+        _rsi_momentum_quality(df_1h, i, direction) * W_RSI_MOMENTUM +
+        _volatility_quality(df_1h, i) * W_VOLATILITY +
+        _ema_extension_quality(df_1h, i, direction) * W_EMA_EXTENSION
     )
     return round(total, 1)
 
@@ -347,20 +397,29 @@ def simulate_trades(df_1h: pd.DataFrame,
                      (trade["direction"] == "SELL" and bar["low"]  <= trade["tp"])
 
             if hit_tp or hit_sl:
-                exit_price = trade["tp"] if hit_tp else trade["sl"]
+                # If both SL and TP fall inside this bar's range, we have no intrabar
+                # tick data to know which was hit first — assume the worse outcome (SL).
+                # This is the conservative convention; resolving to TP here would
+                # silently inflate the win rate.
+                if hit_sl:
+                    exit_price, result = trade["sl"], "SL"
+                else:
+                    exit_price, result = trade["tp"], "TP"
+
                 pnl_pips   = (exit_price - trade["entry"]) \
                              if trade["direction"] == "BUY" \
                              else (trade["entry"] - exit_price)
 
-                risk_amt   = equity * RISK_PER_TRADE
-                sl_dist    = abs(trade["entry"] - trade["sl"])
-                lot_size   = risk_amt / sl_dist if sl_dist else 0
-                pnl_dollar = round(pnl_pips * lot_size, 2)
-                equity     = round(equity + pnl_dollar, 2)
+                risk_amt     = equity * RISK_PER_TRADE
+                sl_dist      = abs(trade["entry"] - trade["sl"])
+                lot_size     = risk_amt / sl_dist if sl_dist else 0
+                spread_cost  = round(SPREAD_USD * lot_size, 2)
+                pnl_dollar   = round(pnl_pips * lot_size - spread_cost, 2)
+                equity       = round(equity + pnl_dollar, 2)
 
                 trade["exit"]       = exit_price
                 trade["exit_time"]  = bar["datetime"]
-                trade["result"]     = "TP" if hit_tp else "SL"
+                trade["result"]     = result
                 trade["pnl_pips"]   = round(pnl_pips, 2)
                 trade["pnl_dollar"] = pnl_dollar
                 trade["equity"]     = equity

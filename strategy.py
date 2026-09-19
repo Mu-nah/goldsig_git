@@ -7,6 +7,7 @@ BB_PERIOD      = 20
 BB_STDDEV      = 2
 ATR_PERIOD     = 14
 ADX_PERIOD     = 14
+EMA_TREND_PERIOD = 20
 
 RSI_OVERSOLD   = 30
 RSI_OVERBOUGHT = 70
@@ -18,13 +19,16 @@ TP_MULTIPLIER  = 2.5
 
 # ── Confluence scoring ──────────────────────────────
 # Trigger conditions above decide WHETHER a setup exists at all.
-# These weights grade HOW GOOD a qualifying setup is, 0-100.
-W_RSI_QUALITY   = 25   # how close RSI sits to the ideal point in its zone
-W_CANDLE        = 20   # candle body strength beyond the minimum
-W_WEEKLY_BIAS   = 15   # weekly EMA20 agreement with daily bias
-W_SWING_ROOM    = 20   # distance past the swing-wall minimum (Trend only)
-W_ADX           = 15   # trend strength (favors Trend setups, penalizes Reversal setups)
+# These weights grade HOW GOOD a qualifying setup is, 0-100. Sum = 100.
+W_RSI_QUALITY   = 18   # how close RSI sits to the ideal point in its zone
+W_CANDLE        = 12   # candle body strength beyond the minimum
+W_WEEKLY_BIAS   = 10   # weekly EMA20 agreement with daily bias
+W_SWING_ROOM    = 15   # distance past the swing-wall minimum (Trend only)
+W_ADX           = 10   # trend strength (favors Trend setups, penalizes Reversal setups)
 W_SESSION       = 5    # London/NY active-hours bonus
+W_RSI_MOMENTUM  = 10   # RSI moving further into the zone vs. drifting out of it
+W_VOLATILITY    = 10   # current ATR vs. its own recent average — avoids dead chop and news spikes
+W_EMA_EXTENSION = 10   # distance from EMA20 in ATR units — avoids chasing an already-extended move
 
 MIN_SCORE = 55   # below this, a technically-qualifying setup is discarded as low quality
 
@@ -87,17 +91,64 @@ def _session_quality(dt) -> float:
         return 0.6
     return 0.2           # Asian / off-hours — thinner, choppier
 
+def _rsi_momentum_quality(df_1h: pd.DataFrame, direction: str, lookback: int = 3) -> float:
+    """RSI moving further into the zone (favorable) vs. drifting back out (unfavorable)."""
+    if len(df_1h) <= lookback:
+        return 0.5
+    rsi_now  = df_1h.iloc[-1]["rsi"]
+    rsi_prev = df_1h.iloc[-1 - lookback]["rsi"]
+    if pd.isna(rsi_now) or pd.isna(rsi_prev):
+        return 0.5
+    slope = rsi_now - rsi_prev
+    directional_slope = slope if direction == "BUY" else -slope
+    return _clip01(0.5 + directional_slope / 20)
+
+def _volatility_quality(df_1h: pd.DataFrame, lookback: int = 50) -> float:
+    """Current ATR vs. its own recent average — penalizes dead chop and abnormal spikes."""
+    if len(df_1h) < lookback + 1:
+        return 0.5
+    atr_now  = df_1h.iloc[-1]["atr"]
+    atr_hist = df_1h["atr"].iloc[-(lookback + 1):-1]
+    atr_avg  = atr_hist.mean()
+    if pd.isna(atr_now) or pd.isna(atr_avg) or atr_avg == 0:
+        return 0.5
+    ratio = atr_now / atr_avg
+    if ratio < 0.7:
+        return _clip01(ratio / 0.7 * 0.5)
+    if ratio <= 1.5:
+        return 1.0
+    return _clip01(1 - (ratio - 1.5))
+
+def _ema_extension_quality(df_1h: pd.DataFrame, direction: str) -> float:
+    """Distance from EMA20 in ATR units — rewards a confirmed push, penalizes chasing an extended move."""
+    last    = df_1h.iloc[-1]
+    ema20   = last.get("ema20", float("nan"))
+    atr_val = last["atr"]
+    if pd.isna(ema20) or pd.isna(atr_val) or atr_val == 0:
+        return 0.5
+    price    = last["close"]
+    distance = (price - ema20) if direction == "BUY" else (ema20 - price)
+    atr_multiple = distance / atr_val
+    if atr_multiple < 0:
+        return 0.3
+    if atr_multiple <= 1.5:
+        return _clip01(0.3 + (atr_multiple / 1.5) * 0.7)
+    return _clip01(1.0 - (atr_multiple - 1.5) / 2.5 * 0.8)
+
 def _confluence_score(df_1h, direction: str, kind: str,
                        rsi_val: float, weekly_bias: str | None,
                        daily_bias: str, adx_val: float) -> tuple[float, dict]:
     candle = df_1h.iloc[-1]
     parts = {
-        "rsi_quality": _rsi_quality(rsi_val, kind, direction) * W_RSI_QUALITY,
-        "candle":      _candle_quality(candle) * W_CANDLE,
-        "weekly_bias": _weekly_quality(weekly_bias, daily_bias) * W_WEEKLY_BIAS,
-        "swing_room":  (_swing_quality(df_1h, direction) if kind == "Trend" else 1.0) * W_SWING_ROOM,
-        "adx":         _adx_quality(adx_val, kind) * W_ADX,
-        "session":     _session_quality(candle["datetime"]) * W_SESSION,
+        "rsi_quality":    _rsi_quality(rsi_val, kind, direction) * W_RSI_QUALITY,
+        "candle":         _candle_quality(candle) * W_CANDLE,
+        "weekly_bias":    _weekly_quality(weekly_bias, daily_bias) * W_WEEKLY_BIAS,
+        "swing_room":     (_swing_quality(df_1h, direction) if kind == "Trend" else 1.0) * W_SWING_ROOM,
+        "adx":            _adx_quality(adx_val, kind) * W_ADX,
+        "session":        _session_quality(candle["datetime"]) * W_SESSION,
+        "rsi_momentum":   _rsi_momentum_quality(df_1h, direction) * W_RSI_MOMENTUM,
+        "volatility":     _volatility_quality(df_1h) * W_VOLATILITY,
+        "ema_extension":  _ema_extension_quality(df_1h, direction) * W_EMA_EXTENSION,
     }
     return round(sum(parts.values()), 1), parts
 
@@ -190,6 +241,7 @@ def generate_signal(df_1h, df_1d, df_1w=None, sentiment_bias: int = 0):
         bollinger_bands(df_1h["close"], BB_PERIOD, BB_STDDEV)
     df_1h["atr"] = atr(df_1h, ATR_PERIOD)
     df_1h["adx"] = adx(df_1h, ADX_PERIOD)
+    df_1h["ema20"] = ema(df_1h["close"], EMA_TREND_PERIOD)
 
     df_1d["bb_upper"], df_1d["bb_mid"], df_1d["bb_lower"] = \
         bollinger_bands(df_1d["close"], BB_PERIOD, BB_STDDEV)
