@@ -1,4 +1,4 @@
-name: Trading Bot (1AM WAT Status)
+#name: Trading Bot (1AM WAT Status)
 
 on:
   schedule:
