@@ -1,4 +1,4 @@
-name: Trading Bot (Signals)
+#name: Trading Bot (Signals)
 
 on:
   schedule:
